@@ -1,0 +1,2 @@
+@yldr-lending/core/=lib/yldr-lending-core/
+@aave-v3/core/=lib/aave-v3-core/

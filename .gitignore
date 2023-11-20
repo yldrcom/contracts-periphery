@@ -1,0 +1,19 @@
+# Compiler files
+cache/
+out/
+
+# Ignores development broadcast logs
+broadcast/
+
+# Docs
+docs/
+
+# Dotenv file
+.env
+.vscode
+
+# Mac OS files
+**/.DS_Store
+
+typechain-types/
+node_modules
