@@ -6,15 +6,13 @@ import {UniswapV3DataProvider, INonfungiblePositionManager} from "../src/ui/Unis
 contract UniswapV3DataProviderTest is BaseTest {
     UniswapV3DataProvider public uniswapV3DataProvider;
 
-    constructor() {
+    function test_mainnet() public {
         vm.createSelectFork("mainnet");
         vm.rollFork(18678509);
 
         uniswapV3DataProvider =
             new UniswapV3DataProvider(INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88));
-    }
 
-    function test() public {
         uint256[] memory ids = new uint256[](5);
         ids[0] = 108501;
         ids[1] = 111455;
@@ -23,5 +21,15 @@ contract UniswapV3DataProviderTest is BaseTest {
         ids[4] = 614213;
 
         uniswapV3DataProvider.getPositionsData(ids);
+    }
+
+    function test_arbitrum() public {
+        vm.createSelectFork("arbitrum_one");
+        vm.rollFork(163870012);
+
+        uniswapV3DataProvider =
+            new UniswapV3DataProvider(INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88));
+
+        uniswapV3DataProvider.getPositionData(1021735);
     }
 }
