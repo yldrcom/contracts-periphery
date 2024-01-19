@@ -158,7 +158,7 @@ contract LiquidationsHelper is IERC3156FlashBorrower, ERC1155Holder, ERC721Holde
         uint256 debtAmount;
         {
             DataTypes.ReserveData memory reserveData = pool.getReserveData(debt.debtAsset);
-            debtAmount = IERC20(reserveData.variableDebtTokenAddress).totalSupply();
+            debtAmount = IERC20(reserveData.variableDebtTokenAddress).balanceOf(user);
         }
         if (IERC20(debt.debtAsset).allowance(address(this), address(pool)) < debtAmount) {
             IERC20(debt.debtAsset).forceApprove(address(pool), type(uint256).max);
