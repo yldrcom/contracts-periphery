@@ -250,6 +250,46 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         uniswapV3Wrapper.burn(BOB, tokenId, balance, BOB);
     }
 
+    function test_compound() public {
+        (uint256 tokenId,,) = uniswapV3Testing.acquireUniswapPosition(
+            address(usdc), address(weth), 2000e6, 1e18, UniswapV3Testing.PositionType.Both
+        );
+
+        (,,,,,,, uint128 liquidityBefore,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
+
+        UniswapV3LeveragedPosition.PositionInitParams memory params = UniswapV3LeveragedPosition.PositionInitParams({
+            tokenId: tokenId,
+            tokenToBorrow: address(usdc),
+            amountToBorrow: 1000e6,
+            flashLoanProvider: aaveFlashloan,
+            assetConverter: assetConverter,
+            owner: ALICE,
+            maxSwapSlippage: 50
+        });
+
+        uniswapV3Testing.positionManager.safeTransferFrom(
+            ALICE, address(uniswapV3Leverage), tokenId, abi.encode(params)
+        );
+
+        UniswapV3LeveragedPosition position =
+            UniswapV3LeveragedPosition(StdUtils.computeCreateAddress(address(uniswapV3Leverage), 2));
+
+        (uint160 currentSqrtPrice,,,,,,) = position.uniswapV3Pool().slot0();
+        vm.stopPrank();
+        // Do some movements to increase fees
+        uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, currentSqrtPrice * 101 / 100);
+        uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, currentSqrtPrice);
+        vm.startPrank(ALICE);
+
+        position.compound(
+            aaveFlashloan,
+            UniswapV3LeveragedPosition.CompoundParams({assetConverter: assetConverter, maxSwapSlippage: 50})
+        );
+
+        (,,,,,,, uint128 liquidityAfter,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
+        assertGt(liquidityAfter, liquidityBefore);
+    }
+
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata /* data */ ) external {
         address token0 = IUniswapV3Pool(msg.sender).token0();
         address token1 = IUniswapV3Pool(msg.sender).token1();
