@@ -27,9 +27,28 @@ contract UniswapV3DataProviderTest is BaseTest {
         vm.createSelectFork("arbitrum_one");
         vm.rollFork(163870012);
 
-        uniswapV3DataProvider =
-            new UniswapV3DataProvider(INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88));
+        INonfungiblePositionManager positionManager =
+            INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
+
+        uniswapV3DataProvider = new UniswapV3DataProvider(positionManager);
 
         uniswapV3DataProvider.getPositionData(1021735);
+        uniswapV3DataProvider.getPositionData(1021320);
+
+        vm.rollFork(164914100);
+        UniswapV3DataProvider.PositionData memory data = uniswapV3DataProvider.getPositionData(1028069);
+
+        vm.startPrank(positionManager.ownerOf(1028069));
+        (uint256 received0, uint256 received1) = positionManager.collect(
+            INonfungiblePositionManager.CollectParams({
+                tokenId: 1028069,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            })
+        );
+
+        assertEq(data.fee0, received0);
+        assertEq(data.fee1, received1);
     }
 }
