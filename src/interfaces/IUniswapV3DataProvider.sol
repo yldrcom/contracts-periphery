@@ -8,7 +8,9 @@ interface IUniswapV3DataProvider {
         address token1;
         uint24 fee;
         int24 tickLower;
+        int24 tickCurrent;
         int24 tickUpper;
+        uint160 sqrtPriceX96;
         uint256 amount0;
         uint256 amount1;
         uint256 fee0;

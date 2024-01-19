@@ -25,7 +25,7 @@ contract UniswapV3DataProvider is IUniswapV3DataProvider {
         UniswapV3Position.UniswapV3PositionData memory position =
             UniswapV3Position.get(positionManager, factory, tokenId);
 
-        (uint160 sqrtPriceX96,,,,,,) = position.pool.slot0();
+        (uint160 sqrtPriceX96, int24 tickCurrent,,,,,) = position.pool.slot0();
         (uint256 amount0, uint256 amount1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96,
             TickMath.getSqrtRatioAtTick(position.tickLower),
@@ -40,7 +40,9 @@ contract UniswapV3DataProvider is IUniswapV3DataProvider {
             token1: position.token1,
             fee: position.pool.fee(),
             tickLower: position.tickLower,
+            tickCurrent: tickCurrent,
             tickUpper: position.tickUpper,
+            sqrtPriceX96: sqrtPriceX96,
             amount0: amount0,
             amount1: amount1,
             fee0: fees0,
