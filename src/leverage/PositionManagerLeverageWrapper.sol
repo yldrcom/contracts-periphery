@@ -44,7 +44,7 @@ contract PositionManagerLeverageWrapper {
         _approveIfNeeded(mintParams.token0);
         _approveIfNeeded(mintParams.token1);
 
-        (uint256 tokenId,,uint256 amount0, uint256 amount1) = positionManager.mint(mintParams);
+        (uint256 tokenId,, uint256 amount0, uint256 amount1) = positionManager.mint(mintParams);
 
         initParams.tokenId = tokenId;
         positionManager.safeTransferFrom(address(this), address(leverage), initParams.tokenId, abi.encode(initParams));
