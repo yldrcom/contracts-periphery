@@ -1,6 +1,6 @@
 pragma solidity ^0.8.10;
 
-import {PoolTesting} from "@yldr-lending/core/test/libraries/PoolTesting.sol";
+import {PoolTesting, PoolConfigurator} from "@yldr-lending/core/test/libraries/PoolTesting.sol";
 import {UniswapV3Testing} from "@yldr-lending/core/test/libraries/UniswapV3Testing.sol";
 import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
 import {console2} from "forge-std/console2.sol";
@@ -85,6 +85,10 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
             ),
             address(new ERC1155UniswapV3Oracle(poolTesting.addressesProvider, uniswapV3Wrapper))
         );
+
+        PoolConfigurator configurator = PoolConfigurator(poolTesting.addressesProvider.getPoolConfigurator());
+        configurator.setReserveFlashLoaning(address(usdc), true);
+        configurator.setReserveFlashLoaning(address(weth), true);
 
         assetConverter = new AssetConverter(poolTesting.addressesProvider);
         uniswapV3Converter =

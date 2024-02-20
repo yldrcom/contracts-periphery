@@ -29,7 +29,6 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
     event Deleverage();
 
     enum FlashloanPurpose {
-        Init,
         Deleverage,
         Compound
     }
@@ -54,6 +53,7 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
     IUniswapV3Factory public immutable uniswapV3Factory;
     IPoolAddressesProvider public immutable addressesProvider;
     IERC1155UniswapV3Wrapper public immutable uniswapV3Wrapper;
+    IPool public immutable pool;
 
     /// @notice Params which are used to initialize position
     /// @param tokenId ID of position token
@@ -67,6 +67,7 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         uint256 tokenId;
         address tokenToBorrow;
         uint256 amountToBorrow;
+        // field not used but kept for backwards compatibility
         IERC3156FlashLender flashLoanProvider;
         IAssetConverter assetConverter;
         address owner;
@@ -93,6 +94,7 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
 
     constructor(IPoolAddressesProvider _addressesProvider, IERC1155UniswapV3Wrapper _uniswapV3Wrapper) {
         addressesProvider = _addressesProvider;
+        pool = IPool(addressesProvider.getPool());
         uniswapV3Wrapper = _uniswapV3Wrapper;
         positionManager = _uniswapV3Wrapper.positionManager();
         uniswapV3Factory = IUniswapV3Factory(positionManager.factory());
@@ -112,13 +114,15 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         (,, token0, token1, fee, tickLower, tickUpper,,,,,) = positionManager.positions(params.tokenId);
         uniswapV3Pool = IUniswapV3Pool(uniswapV3Factory.getPool(token0, token1, fee));
 
-        _takeFlashloan(
-            params.flashLoanProvider,
-            params.tokenToBorrow,
-            params.amountToBorrow,
-            FlashloanPurpose.Init,
-            abi.encode(params)
-        );
+        address[] memory assets = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        bool[] memory createPosition = new bool[](1);
+
+        assets[0] = params.tokenToBorrow;
+        amounts[0] = params.amountToBorrow;
+        createPosition[0] = true;
+
+        pool.flashLoan(address(this), assets, amounts, createPosition, address(this), abi.encode(params), 0);
     }
 
     /// @notice Helper function for flashloans. Sets temporary flashLoanProvider storage variable to authorize flashloan
@@ -250,8 +254,8 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         uint256 left1;
     }
 
-    /// @notice Function whicn initializes leveraged position
-    function _initPositionInsideFlashloan(PositionInitParams memory params, uint256 flashFee) internal {
+    /// @notice Function which initializes leveraged position
+    function _initPositionInsideFlashloan(PositionInitParams memory params) internal {
         InitPositionVars memory vars;
 
         // Calculate amounts to swap for token0 and token1
@@ -278,19 +282,9 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
             })
         );
 
-        // Account for leftovers
-        vars.left0 = vars.amount0 - vars.amount0Resulted;
-        vars.left1 = vars.amount1 - vars.amount1Resulted;
-
-        // Swap leftovers back to borrowed token
-        uint256 tokenToBorrowLeft = _swap(
-            params.assetConverter, token0, params.tokenToBorrow, vars.left0, params.maxSwapSlippage
-        ) + _swap(params.assetConverter, token1, params.tokenToBorrow, vars.left1, params.maxSwapSlippage);
-
-        // Borrow additional tokens to repay flashloan, accouning for leftovers
-        IPool(addressesProvider.getPool()).borrow(
-            params.tokenToBorrow, params.amountToBorrow + flashFee - tokenToBorrowLeft, 0, address(this)
-        );
+        // Send leftovers to user
+        IERC20(token0).safeTransfer(params.owner, vars.amount0 - vars.amount0Resulted);
+        IERC20(token1).safeTransfer(params.owner, vars.amount1 - vars.amount1Resulted);
     }
 
     function _getPositionUSDValues() internal view returns (uint256 usdLiquidity, uint256 usdFees) {
@@ -512,6 +506,21 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         pool.borrow(borrowedToken, debtAmount + flashFee, 0, address(this));
     }
 
+    function executeOperation(
+        address[] calldata,
+        uint256[] calldata,
+        uint256[] calldata,
+        address initiator,
+        bytes calldata params
+    ) external returns (bool) {
+        require(msg.sender == address(pool), "Only pool can call this function");
+        require(initiator == address(this), "Only this contract can initiate flash loan");
+
+        _initPositionInsideFlashloan(abi.decode(params, (PositionInitParams)));
+
+        return true;
+    }
+
     /// @notice Function which is called by flashloan provider
     function onFlashLoan(address initiator, address token, uint256 amount, uint256 flashFee, bytes calldata data)
         external
@@ -522,9 +531,7 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
 
         (FlashloanPurpose purpose, bytes memory params) = abi.decode(data, (FlashloanPurpose, bytes));
 
-        if (purpose == FlashloanPurpose.Init) {
-            _initPositionInsideFlashloan(abi.decode(params, (PositionInitParams)), flashFee);
-        } else if (purpose == FlashloanPurpose.Deleverage) {
+        if (purpose == FlashloanPurpose.Deleverage) {
             _deleverageInsideFlashloan(abi.decode(params, (DeleverageParams)), amount, flashFee);
         } else if (purpose == FlashloanPurpose.Compound) {
             _compoundInsideFlashloan(abi.decode(params, (CompoundParams)), amount, flashFee);
