@@ -42,9 +42,11 @@ contract CombinedERC3156WrapperTest is BaseTest, IERC3156FlashBorrower {
             address(usdc), 0.8e27, 0, 0.02e27, 0.8e27, 0.7e4, 0.75e4, 1.05e4, 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6
         );
 
-        PoolConfigurator(poolTesting.addressesProvider.getPoolConfigurator()).setReserveFlashLoaning(
-            address(usdc), true
-        );
+        PoolConfigurator configurator = PoolConfigurator(poolTesting.addressesProvider.getPoolConfigurator());
+
+        configurator.setReserveFlashLoaning(address(usdc), true);
+        configurator.updateFlashloanPremiumTotal(5);
+        configurator.updateFlashloanPremiumToProtocol(5);
 
         yldrPool = IPool(poolTesting.addressesProvider.getPool());
         aavePool = IAavePool(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2);

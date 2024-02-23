@@ -15,6 +15,8 @@ import {UniswapV3Leverage, UniswapV3LeveragedPosition} from "../src/leverage/Uni
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {AaveERC3156Wrapper, IPool as IAavePool} from "../src/flashloan/AaveERC3156Wrapper.sol";
+import {YLDRERC3156Wrapper} from "../src/flashloan/YLDRERC3156Wrapper.sol";
+import {CombinedERC3156Wrapper} from "../src/flashloan/CombinedERC3156Wrapper.sol";
 import {AssetConverter, IAssetConverter} from "../src/AssetConverter.sol";
 import {UniswapV3Converter, IQuoterV2} from "../src/converters/UniswapV3Converter.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -43,6 +45,8 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
     UniswapV3Converter uniswapV3Converter;
 
     AaveERC3156Wrapper aaveFlashloan;
+    YLDRERC3156Wrapper yldrFlashloan;
+    CombinedERC3156Wrapper combinedFlashloan;
 
     constructor() {
         vm.createSelectFork("mainnet");
@@ -87,6 +91,8 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         PoolConfigurator configurator = PoolConfigurator(poolTesting.addressesProvider.getPoolConfigurator());
         configurator.setReserveFlashLoaning(address(usdc), true);
         configurator.setReserveFlashLoaning(address(weth), true);
+        configurator.updateFlashloanPremiumTotal(5);
+        configurator.updateFlashloanPremiumToProtocol(5);
 
         assetConverter = new AssetConverter(poolTesting.addressesProvider);
         uniswapV3Converter =
@@ -107,6 +113,8 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         assetConverter.updateRoutes(updates);
 
         aaveFlashloan = new AaveERC3156Wrapper(IAavePool(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2));
+        yldrFlashloan = new YLDRERC3156Wrapper(IPool(poolTesting.addressesProvider.getPool()));
+        combinedFlashloan = new CombinedERC3156Wrapper(yldrFlashloan, aaveFlashloan);
 
         uniswapV3Leverage = new UniswapV3Leverage(poolTesting.addressesProvider, uniswapV3Wrapper);
 
@@ -164,6 +172,57 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
                 maxSwapSlippage: 50
             })
         );
+
+        (,,,,,,, uint128 liquidityAfter,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
+        assertLt(liquidityAfter, liquidityBefore);
+        assertApproxEqAbs(liquidityAfter, liquidityBefore, 0.01e18);
+        assertEq(uniswapV3Testing.positionManager.ownerOf(tokenId), ALICE);
+    }
+
+    function test_leverage_combined_flash() public {
+        vm.stopPrank();
+        // leave only 1.5K in pool
+        vm.startPrank(BOB);
+        IPool(poolTesting.addressesProvider.getPool()).withdraw(address(usdc), 998_500e6, BOB);
+
+        vm.startPrank(ALICE);
+
+        (uint256 tokenId,,) = uniswapV3Testing.acquireUniswapPosition(
+            address(usdc), address(weth), 1000e6, 1e18, UniswapV3Testing.PositionType.Both
+        );
+
+        (,,,,,,, uint128 liquidityBefore,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
+
+        UniswapV3LeveragedPosition.PositionInitParams memory params = UniswapV3LeveragedPosition.PositionInitParams({
+            tokenId: tokenId,
+            tokenToBorrow: address(usdc),
+            amountToBorrow: 1_000e6,
+            flashLoanProvider: AaveERC3156Wrapper(address(0)), // not used
+            assetConverter: assetConverter,
+            owner: ALICE,
+            maxSwapSlippage: 50
+        });
+
+        uniswapV3Testing.positionManager.safeTransferFrom(
+            ALICE, address(uniswapV3Leverage), tokenId, abi.encode(params)
+        );
+
+        address expectedPositionAddress = StdUtils.computeCreateAddress(address(uniswapV3Leverage), 2);
+
+        uint256 usdcToTreasuryBefore =
+            IPool(poolTesting.addressesProvider.getPool()).getReserveData(address(usdc)).accruedToTreasury;
+        UniswapV3LeveragedPosition(expectedPositionAddress).deleverage(
+            combinedFlashloan,
+            UniswapV3LeveragedPosition.DeleverageParams({
+                assetConverter: assetConverter,
+                receiver: ALICE,
+                maxSwapSlippage: 50
+            })
+        );
+        uint256 usdcToTreasuryAfter =
+            IPool(poolTesting.addressesProvider.getPool()).getReserveData(address(usdc)).accruedToTreasury;
+
+        assertGt(usdcToTreasuryAfter, usdcToTreasuryBefore);
 
         (,,,,,,, uint128 liquidityAfter,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
         assertLt(liquidityAfter, liquidityBefore);
