@@ -39,7 +39,16 @@ contract CombinedERC3156WrapperTest is BaseTest, IERC3156FlashBorrower {
         poolTesting.init(ADMIN, 2);
 
         poolTesting.addReserve(
-            address(usdc), 0.8e27, 0, 0.02e27, 0.8e27, 0.7e4, 0.75e4, 1.05e4, 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6
+            address(usdc),
+            0.8e27,
+            0,
+            0.02e27,
+            0.8e27,
+            0.7e4,
+            0.75e4,
+            1.05e4,
+            0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6,
+            0.15e4
         );
 
         PoolConfigurator configurator = PoolConfigurator(poolTesting.addressesProvider.getPoolConfigurator());
