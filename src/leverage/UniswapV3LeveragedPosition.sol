@@ -395,7 +395,6 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
     /// @param amount Amount of flashloan
     /// @param flashFee Fee of flashloan
     function _deleverageInsideFlashloan(DeleverageParams memory params, uint256 amount, uint256 flashFee) internal {
-        IPool pool = IPool(addressesProvider.getPool());
         // Repay debt with flashloaned funds
         IERC20(borrowedToken).forceApprove(address(pool), amount);
         if (amount > 0) {
@@ -436,7 +435,6 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
     }
 
     function _compoundInsideFlashloan(CompoundParams memory params, uint256 debtAmount, uint256 flashFee) internal {
-        IPool pool = IPool(addressesProvider.getPool());
         // Repay debt with flashloaned funds
         IERC20(borrowedToken).forceApprove(address(pool), debtAmount);
         if (debtAmount > 0) {

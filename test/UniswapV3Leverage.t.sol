@@ -230,6 +230,57 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         assertEq(uniswapV3Testing.positionManager.ownerOf(tokenId), ALICE);
     }
 
+    function test_leverage_combined_flash_borrow_all() public {
+        vm.stopPrank();
+        // leave only 1K in pool
+        vm.startPrank(BOB);
+        IPool(poolTesting.addressesProvider.getPool()).withdraw(address(usdc), 990_000e6, BOB);
+
+        vm.startPrank(ALICE);
+
+        (uint256 tokenId,,) = uniswapV3Testing.acquireUniswapPosition(
+            address(usdc), address(weth), 1000e6, 1e18, UniswapV3Testing.PositionType.Both
+        );
+
+        (,,,,,,, uint128 liquidityBefore,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
+
+        UniswapV3LeveragedPosition.PositionInitParams memory params = UniswapV3LeveragedPosition.PositionInitParams({
+            tokenId: tokenId,
+            tokenToBorrow: address(usdc),
+            amountToBorrow: 1_000e6,
+            flashLoanProvider: AaveERC3156Wrapper(address(0)), // not used
+            assetConverter: assetConverter,
+            owner: ALICE,
+            maxSwapSlippage: 50
+        });
+
+        uniswapV3Testing.positionManager.safeTransferFrom(
+            ALICE, address(uniswapV3Leverage), tokenId, abi.encode(params)
+        );
+
+        address expectedPositionAddress = StdUtils.computeCreateAddress(address(uniswapV3Leverage), 2);
+
+        uint256 usdcToTreasuryBefore =
+            IPool(poolTesting.addressesProvider.getPool()).getReserveData(address(usdc)).accruedToTreasury;
+        UniswapV3LeveragedPosition(expectedPositionAddress).deleverage(
+            combinedFlashloan,
+            UniswapV3LeveragedPosition.DeleverageParams({
+                assetConverter: assetConverter,
+                receiver: ALICE,
+                maxSwapSlippage: 50
+            })
+        );
+        uint256 usdcToTreasuryAfter =
+            IPool(poolTesting.addressesProvider.getPool()).getReserveData(address(usdc)).accruedToTreasury;
+
+        assertGt(usdcToTreasuryAfter, usdcToTreasuryBefore);
+
+        (,,,,,,, uint128 liquidityAfter,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
+        assertLt(liquidityAfter, liquidityBefore);
+        assertApproxEqAbs(liquidityAfter, liquidityBefore, 0.01e18);
+        assertEq(uniswapV3Testing.positionManager.ownerOf(tokenId), ALICE);
+    }
+
     function _calculateSqrtPriceX96(uint256 token0Rate, uint256 token1Rate, uint8 token0Decimals, uint8 token1Decimals)
         internal
         pure
@@ -357,8 +408,6 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         (uint256 tokenId,,) = uniswapV3Testing.acquireUniswapPosition(
             address(usdc), address(weth), 2000e6, 1e18, UniswapV3Testing.PositionType.Both
         );
-
-        (,,,,,,, uint128 liquidityBefore,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
 
         UniswapV3LeveragedPosition.PositionInitParams memory params = UniswapV3LeveragedPosition.PositionInitParams({
             tokenId: tokenId,
