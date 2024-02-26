@@ -101,6 +101,7 @@ contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
                 )
             ),
             address(new ERC1155UniswapV3Oracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
+            ADMIN,
             0.2e4
         );
 

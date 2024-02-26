@@ -102,6 +102,7 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
                 )
             ),
             address(new ERC1155UniswapV3Oracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
+            ADMIN,
             0.2e4
         );
 

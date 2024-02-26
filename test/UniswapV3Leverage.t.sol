@@ -25,6 +25,7 @@ import {IYLDROracle, IPriceOracleGetter} from "@yldr-lending/core/src/interfaces
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IUniswapV3SwapCallback} from "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
 import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import {YLDRFeeCollector} from "../src/YLDRFeeCollector.sol";
 
 contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
     using PoolTesting for PoolTesting.Data;
@@ -48,6 +49,8 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
     YLDRERC3156Wrapper yldrFlashloan;
     CombinedERC3156Wrapper combinedFlashloan;
 
+    YLDRFeeCollector feeCollector;
+
     constructor() {
         vm.createSelectFork("mainnet");
         vm.rollFork(18630167);
@@ -67,6 +70,8 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
                 )
             )
         );
+
+        feeCollector = new YLDRFeeCollector(uniswapV3Wrapper, ADMIN, ADMIN);
 
         vm.startPrank(ADMIN);
         poolTesting.init(ADMIN, 2);
@@ -104,6 +109,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
                 )
             ),
             address(new ERC1155UniswapV3Oracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
+            address(feeCollector),
             0.2e4
         );
 
@@ -362,9 +368,13 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         vm.startPrank(BOB);
 
+        uint256 adminBalanceBefore = weth.balanceOf(ADMIN);
+        vm.expectCall(address(feeCollector), abi.encodePacked(YLDRFeeCollector.onERC1155Received.selector));
         pool.erc1155LiquidationCall(
             address(uniswapV3Wrapper), tokenId, address(usdc), expectedPositionAddress, 1000e6, false
         );
+        assertGt(weth.balanceOf(ADMIN), adminBalanceBefore);
+
         pool.getUserAccountData(expectedPositionAddress);
 
         vm.startPrank(ALICE);
