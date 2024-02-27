@@ -139,7 +139,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         aaveFlashloan = new AaveERC3156Wrapper(IAavePool(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2));
         yldrFlashloan = new YLDRERC3156Wrapper(IPool(poolTesting.addressesProvider.getPool()));
-        combinedFlashloan = new CombinedERC3156Wrapper(yldrFlashloan, aaveFlashloan);
+        combinedFlashloan = new CombinedERC3156Wrapper(yldrFlashloan, aaveFlashloan, 0, address(this));
 
         uniswapV3Leverage = new UniswapV3Leverage(poolTesting.addressesProvider, uniswapV3Wrapper);
 

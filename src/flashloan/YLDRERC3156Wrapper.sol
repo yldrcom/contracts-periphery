@@ -5,9 +5,11 @@ import {IERC3156FlashLender, IERC3156FlashBorrower} from "@openzeppelin/contract
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {PercentageMath} from "@yldr-lending/core/src/protocol/libraries/math/PercentageMath.sol";
 
 contract YLDRERC3156Wrapper is IERC3156FlashLender {
     using SafeERC20 for IERC20;
+    using PercentageMath for uint256;
 
     IPool public immutable pool;
 
@@ -34,7 +36,7 @@ contract YLDRERC3156Wrapper is IERC3156FlashLender {
     /// @inheritdoc IERC3156FlashLender
     function flashFee(address token, uint256 amount) external view override returns (uint256) {
         require(_getYTokenAddress(token) != address(0), "Token is not supported");
-        return (amount * pool.FLASHLOAN_PREMIUM_TOTAL()) / 10000;
+        return amount.percentMul(pool.FLASHLOAN_PREMIUM_TOTAL());
     }
 
     /// @inheritdoc IERC3156FlashLender

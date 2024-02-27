@@ -5,12 +5,17 @@ import {IERC3156FlashLender, IERC3156FlashBorrower} from "@openzeppelin/contract
 import {IPool} from "@aave-v3/core/contracts/interfaces/IPool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {PercentageMath} from "@yldr-lending/core/src/protocol/libraries/math/PercentageMath.sol";
 
 contract CombinedERC3156Wrapper is IERC3156FlashLender, IERC3156FlashBorrower {
+    using PercentageMath for uint256;
     using SafeERC20 for IERC20;
 
     IERC3156FlashLender public immutable mainLender;
     IERC3156FlashLender public immutable fallbackLender;
+    uint256 public immutable feePercent;
+    address public immutable feeTreasury;
 
     /// @notice Common data for flashloan chain
     /// @param receiver - receiver of the starting flashloan
@@ -37,9 +42,16 @@ contract CombinedERC3156Wrapper is IERC3156FlashLender, IERC3156FlashBorrower {
         uint256 mainFee;
     }
 
-    constructor(IERC3156FlashLender _mainLender, IERC3156FlashLender _fallbackLender) {
+    constructor(
+        IERC3156FlashLender _mainLender,
+        IERC3156FlashLender _fallbackLender,
+        uint256 _feePercent,
+        address _feeTreasury
+    ) {
         mainLender = _mainLender;
         fallbackLender = _fallbackLender;
+        feePercent = _feePercent;
+        feeTreasury = _feeTreasury;
     }
 
     /// @inheritdoc IERC3156FlashLender
@@ -50,11 +62,12 @@ contract CombinedERC3156Wrapper is IERC3156FlashLender, IERC3156FlashBorrower {
     /// @inheritdoc IERC3156FlashLender
     function flashFee(address token, uint256 amount) external view override returns (uint256) {
         uint256 maxMain = mainLender.maxFlashLoan(token);
-
+        uint256 minFee = amount.percentMul(feePercent);
         if (amount <= maxMain) {
-            return mainLender.flashFee(token, amount);
+            return Math.max(minFee, mainLender.flashFee(token, amount));
         } else {
-            return mainLender.flashFee(token, maxMain) + fallbackLender.flashFee(token, amount - maxMain);
+            return
+                Math.max(minFee, mainLender.flashFee(token, maxMain) + fallbackLender.flashFee(token, amount - maxMain));
         }
     }
 
@@ -77,6 +90,12 @@ contract CombinedERC3156Wrapper is IERC3156FlashLender, IERC3156FlashBorrower {
     }
 
     function _issueFlashloan(address token, CommonData memory commonData, uint256 totalFee) internal {
+        uint256 minFee = commonData.amount.percentMul(feePercent);
+        uint256 feeToTreasury = 0;
+        if (totalFee < minFee) {
+            feeToTreasury = minFee - totalFee;
+            totalFee += feeToTreasury;
+        }
         IERC20(token).safeTransfer(address(commonData.receiver), commonData.amount);
         require(
             commonData.receiver.onFlashLoan(commonData.initiator, token, commonData.amount, totalFee, commonData.data)
@@ -84,6 +103,9 @@ contract CombinedERC3156Wrapper is IERC3156FlashLender, IERC3156FlashBorrower {
             "IERC3156: Callback failed"
         );
         IERC20(token).safeTransferFrom(address(commonData.receiver), address(this), commonData.amount + totalFee);
+        if (feeToTreasury > 0) {
+            IERC20(token).safeTransfer(feeTreasury, feeToTreasury);
+        }
     }
 
     function onFlashLoan(address initiator, address token, uint256 amount, uint256 fee, bytes calldata params)
