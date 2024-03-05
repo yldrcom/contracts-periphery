@@ -13,15 +13,21 @@ import {IUniswapV3LeverageDataProvider} from "../interfaces/IUniswapV3LeverageDa
 import {UniswapV3LeveragedPosition} from "../leverage/UniswapV3LeveragedPosition.sol";
 import {IPoolAddressesProvider} from "@yldr-lending/core/src/interfaces/IPoolAddressesProvider.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
-import {PercentageMath} from "@yldr-lending/core/src/protocol/libraries/math/PercentageMath.sol";
+import {IUniswapV3Leverage} from "../interfaces/IUniswapV3Leverage.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {UniswapV3LeveragedPosition} from "../leverage/UniswapV3LeveragedPosition.sol";
 
 contract UniswapV3LeverageDataProvider is IUniswapV3LeverageDataProvider {
-    using PercentageMath for uint256;
-
     IUniswapV3DataProvider public immutable uniswapV3DataProvider;
+    IUniswapV3Leverage public immutable uniswapV3Leverage;
 
-    constructor(IUniswapV3DataProvider _uniswapV3DataProvider) {
+    constructor(IUniswapV3DataProvider _uniswapV3DataProvider, IUniswapV3Leverage _uniswapV3Leverage) {
         uniswapV3DataProvider = _uniswapV3DataProvider;
+        uniswapV3Leverage = _uniswapV3Leverage;
+    }
+
+    function getGlobalRevenueFee() public view returns (uint256) {
+        return UniswapV3LeveragedPosition(uniswapV3Leverage.implementation()).revenueFeePercent();
     }
 
     function getPositionData(address _position) public view returns (PositionData memory) {
@@ -34,16 +40,17 @@ contract UniswapV3LeverageDataProvider is IUniswapV3LeverageDataProvider {
         uint256 debt = IERC20(pool.getReserveData(debtAsset).variableDebtTokenAddress).balanceOf(_position);
 
         (uint256 lastFees0, uint256 lastFees1) = (position.lastFees0(), position.lastFees1());
-        uint256 revenueFee = position.revenueFee();
-        uint256 revenueFee0 = (positionData.fee0 - lastFees0).percentMul(revenueFee);
-        uint256 revenueFee1 = (positionData.fee1 - lastFees1).percentMul(revenueFee);
+        uint256 revenueFeePercent = position.revenueFee();
+        uint256 revenueFee0 = Math.mulDiv(positionData.fee0 - lastFees0, revenueFeePercent, 1e4);
+        uint256 revenueFee1 = Math.mulDiv(positionData.fee1 - lastFees1, revenueFeePercent, 1e4);
 
         return PositionData({
             uniswapV3Position: positionData,
             debt: debt,
             debtAsset: debtAsset,
             revenueFee0: revenueFee0,
-            revenueFee1: revenueFee1
+            revenueFee1: revenueFee1,
+            revenueFeePercent: revenueFeePercent
         });
     }
 

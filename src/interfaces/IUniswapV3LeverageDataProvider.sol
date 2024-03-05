@@ -10,6 +10,7 @@ interface IUniswapV3LeverageDataProvider {
         uint256 debt;
         uint256 revenueFee0;
         uint256 revenueFee1;
+        uint256 revenueFeePercent;
     }
 
     function getPositionData(address position) external view returns (PositionData memory);

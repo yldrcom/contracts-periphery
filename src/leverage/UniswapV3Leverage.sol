@@ -9,11 +9,10 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {UniswapV3LeveragedPosition} from "./UniswapV3LeveragedPosition.sol";
 import {IERC3156FlashLender} from "@openzeppelin/contracts/interfaces/IERC3156FlashLender.sol";
 import {IUniswapV3Leverage} from "../interfaces/IUniswapV3Leverage.sol";
-import {IBeacon} from "@openzeppelin/contracts/proxy/beacon/IBeacon.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-contract UniswapV3Leverage is IUniswapV3Leverage, IBeacon, Ownable, ERC1155Holder {
+contract UniswapV3Leverage is IUniswapV3Leverage, Ownable, ERC1155Holder {
     IPoolAddressesProvider public immutable addressesProvider;
     IERC1155UniswapV3Wrapper public immutable uniswapV3Wrapper;
     INonfungiblePositionManager public immutable positionManager;

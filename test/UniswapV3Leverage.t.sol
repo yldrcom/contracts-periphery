@@ -193,9 +193,13 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             maxSwapSlippage: 50
         });
 
+        uint256 aliceNetWorthBefore = _getUsdValue(usdc.balanceOf(ALICE), weth.balanceOf(ALICE));
         uniswapV3Testing.positionManager.safeTransferFrom(
             ALICE, address(uniswapV3Leverage), tokenId, abi.encode(params)
         );
+        uint256 aliceNetWorthAfter = _getUsdValue(usdc.balanceOf(ALICE), weth.balanceOf(ALICE));
+
+        assertLt(aliceNetWorthAfter, aliceNetWorthBefore + positionValue / 1000, "Too much leftovers");
 
         UniswapV3LeveragedPosition position =
             UniswapV3LeveragedPosition(StdUtils.computeCreateAddress(address(uniswapV3Leverage), 2));
@@ -578,6 +582,38 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         }
     }
 
+    function test_pool_price_deviation_checked() external {
+        (uint256 tokenId,,) = uniswapV3Testing.acquireUniswapPosition(
+            address(usdc), address(weth), 2000e6, 1e18, UniswapV3Testing.PositionType.Both
+        );
+
+        uint160 currentSqrtPrice = _calculateSqrtPriceX96();
+        vm.stopPrank();
+        uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, currentSqrtPrice * 10026 / 1e4);
+
+        vm.prank(ALICE);
+        UniswapV3LeveragedPosition.PositionInitParams memory params = UniswapV3LeveragedPosition.PositionInitParams({
+            tokenId: tokenId,
+            tokenToBorrow: address(usdc),
+            amountToBorrow: 1000e6,
+            flashLoanProvider: aaveFlashloan,
+            assetConverter: assetConverter,
+            owner: ALICE,
+            maxSwapSlippage: 50
+        });
+        vm.expectRevert(UniswapV3LeveragedPosition.TooBigPoolPriceDeviation.selector);
+        uniswapV3Testing.positionManager.safeTransferFrom(
+            ALICE, address(uniswapV3Leverage), tokenId, abi.encode(params)
+        );
+
+        uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, currentSqrtPrice * 10023 / 1e4);
+
+        vm.prank(ALICE);
+        uniswapV3Testing.positionManager.safeTransferFrom(
+            ALICE, address(uniswapV3Leverage), tokenId, abi.encode(params)
+        );
+    }
+
     function _getUsdValue(uint256 usdcValue, uint256 wethValue) internal view returns (uint256) {
         IYLDROracle oracle = IYLDROracle(poolTesting.addressesProvider.getPriceOracle());
         return usdcValue * oracle.getAssetPrice(address(usdc)) / 1e6
@@ -593,5 +629,28 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         } else if (amount1Delta > 0) {
             IERC20Metadata(token1).safeTransfer(msg.sender, uint256(amount1Delta));
         }
+    }
+
+    function _calculateSqrtPriceX96() internal view returns (uint160 sqrtPriceX96) {
+        IYLDROracle oracle = IYLDROracle(poolTesting.addressesProvider.getPriceOracle());
+
+        uint256 token0Rate = oracle.getAssetPrice(address(usdc));
+        uint256 token1Rate = oracle.getAssetPrice(address(weth));
+        uint8 token0Decimals = 6;
+        uint8 token1Decimals = 18;
+
+        // price = (10 ** token1Decimals) * token0Rate / ((10 ** token0Decimals) * token1Rate)
+        // sqrtPriceX96 = sqrt(price * 2^192)
+
+        // overflows only if token0 is 2**160 times more expensive than token1 (considered non-likely)
+        uint256 factor1 = Math.mulDiv(token0Rate, 2 ** 96, token1Rate);
+
+        // Cannot overflow if token1Decimals <= 18 and token0Decimals <= 18
+        uint256 factor2 = Math.mulDiv(10 ** token1Decimals, 2 ** 96, 10 ** token0Decimals);
+
+        uint128 factor1Sqrt = uint128(Math.sqrt(factor1));
+        uint128 factor2Sqrt = uint128(Math.sqrt(factor2));
+
+        sqrtPriceX96 = factor1Sqrt * factor2Sqrt;
     }
 }
