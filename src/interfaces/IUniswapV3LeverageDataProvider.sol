@@ -8,6 +8,8 @@ interface IUniswapV3LeverageDataProvider {
         IUniswapV3DataProvider.PositionData uniswapV3Position;
         address debtAsset;
         uint256 debt;
+        uint256 revenueFee0;
+        uint256 revenueFee1;
     }
 
     function getPositionData(address position) external view returns (PositionData memory);

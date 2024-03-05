@@ -130,7 +130,7 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
 
         aaveFlashloan = new AaveERC3156Wrapper(IAavePool(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2));
 
-        uniswapV3Leverage = new UniswapV3Leverage(poolTesting.addressesProvider, uniswapV3Wrapper);
+        uniswapV3Leverage = new UniswapV3Leverage(poolTesting.addressesProvider, uniswapV3Wrapper, 1000, address(this));
 
         leverageWrapper = new PositionManagerLeverageWrapper(uniswapV3Testing.positionManager, uniswapV3Leverage);
 

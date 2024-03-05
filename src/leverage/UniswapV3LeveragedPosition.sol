@@ -45,15 +45,21 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
     int24 public tickLower;
     int24 public tickUpper;
 
-    /// @dev Temproary variable used only to store flash loan provider address during flashloans
+    /// @dev Temporary variable used only to store flash loan provider address during flashloans
     /// Different providers may be used for deposits and withdrawals
     IERC3156FlashLender private flashLoanProvider;
+
+    uint256 public revenueFee;
+    uint128 public lastFees0;
+    uint128 public lastFees1;
 
     INonfungiblePositionManager public immutable positionManager;
     IUniswapV3Factory public immutable uniswapV3Factory;
     IPoolAddressesProvider public immutable addressesProvider;
     IERC1155UniswapV3Wrapper public immutable uniswapV3Wrapper;
     IPool public immutable pool;
+    uint256 public immutable revenueFeePercent;
+    address public immutable revenueFeeTreasury;
 
     /// @notice Params which are used to initialize position
     /// @param tokenId ID of position token
@@ -92,12 +98,19 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         uint256 maxSwapSlippage;
     }
 
-    constructor(IPoolAddressesProvider _addressesProvider, IERC1155UniswapV3Wrapper _uniswapV3Wrapper) {
+    constructor(
+        IPoolAddressesProvider _addressesProvider,
+        IERC1155UniswapV3Wrapper _uniswapV3Wrapper,
+        uint256 _revenueFeePercent,
+        address _revenueFeeTreasury
+    ) {
         addressesProvider = _addressesProvider;
         pool = IPool(addressesProvider.getPool());
         uniswapV3Wrapper = _uniswapV3Wrapper;
         positionManager = _uniswapV3Wrapper.positionManager();
         uniswapV3Factory = IUniswapV3Factory(positionManager.factory());
+        revenueFeePercent = _revenueFeePercent;
+        revenueFeeTreasury = _revenueFeeTreasury;
     }
 
     /// @notice Initializer of the contract. Sets storage variables and performs leveraging operations
@@ -285,6 +298,19 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         // Send leftovers to user
         IERC20(token0).safeTransfer(params.owner, vars.amount0 - vars.amount0Resulted);
         IERC20(token1).safeTransfer(params.owner, vars.amount1 - vars.amount1Resulted);
+
+        if (revenueFeePercent > 0) {
+            IYLDROracle oracle = IYLDROracle(addressesProvider.getPriceOracle());
+
+            uint256 debtValue = params.amountToBorrow * oracle.getAssetPrice(params.tokenToBorrow)
+                / (10 ** IERC20Metadata(params.tokenToBorrow).decimals());
+            uint256 positionValue = oracle.getERC1155AssetPrice(address(uniswapV3Wrapper), positionTokenId);
+
+            // Only take revenue fee from borrowed funds
+            revenueFee = revenueFeePercent * debtValue / positionValue;
+
+            _updateLastPendingFees();
+        }
     }
 
     function _getPositionUSDValues() internal view returns (uint256 usdLiquidity, uint256 usdFees) {
@@ -322,7 +348,7 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
     ///
     /// In case when we are not the only owner of the position (this can happen when position was liquidated), we can't unwrap it,
     /// so we burn all shares, receive token0 and token1 amounts and send part of it to receiver
-    function _burnPartAndWithdrawRest(uint256 usdAmountNeeded, address receiver)
+    function _burnPartAndWithdrawRest(DeleverageAmounts memory amounts, address receiver)
         internal
         returns (uint256 amount0, uint256 amount1)
     {
@@ -333,12 +359,14 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
             uniswapV3Wrapper.unwrap(address(this), positionTokenId, address(this));
             (,,,,,,, uint128 liquidity,,,,) = positionManager.positions(positionTokenId);
             uint256 liquidityToBurn;
-            uint256 feesPercentToWithdraw;
-            if (usdAmountNeeded <= usdLiquidity) {
-                liquidityToBurn = Math.mulDiv(liquidity, usdAmountNeeded, usdLiquidity);
+            uint256 feesPercentToUseForRepayment;
+
+            // We want to avoid touching user fees during repayment if possible.
+            if (amounts.usdRepayment <= usdLiquidity) {
+                liquidityToBurn = Math.mulDiv(liquidity, amounts.usdRepayment, usdLiquidity);
             } else {
                 liquidityToBurn = liquidity;
-                feesPercentToWithdraw = Math.mulDiv(usdAmountNeeded - usdLiquidity, 10000, usdFees);
+                feesPercentToUseForRepayment = Math.mulDiv(amounts.usdRepayment - usdLiquidity, 1e4, usdFees);
             }
             (amount0, amount1) = positionManager.decreaseLiquidity(
                 INonfungiblePositionManager.DecreaseLiquidityParams({
@@ -351,18 +379,22 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
             );
             // At this point, tokensOwed contains fees + amounts just withdrawn
             (,,,,,,,,,, uint256 tokensOwed0, uint256 tokensOwed1) = positionManager.positions(positionTokenId);
-            uint256 fees0 = tokensOwed0 - amount0;
-            uint256 fees1 = tokensOwed1 - amount1;
-            amount0 += Math.mulDiv(fees0, feesPercentToWithdraw, 10000);
-            amount1 += Math.mulDiv(fees1, feesPercentToWithdraw, 10000);
+            amount0 += Math.mulDiv(tokensOwed0 - amount0, feesPercentToUseForRepayment, 1e4);
+            amount1 += Math.mulDiv(tokensOwed1 - amount1, feesPercentToUseForRepayment, 1e4);
             positionManager.collect(
                 INonfungiblePositionManager.CollectParams({
                     tokenId: positionTokenId,
                     recipient: address(this),
-                    amount0Max: uint128(amount0),
-                    amount1Max: uint128(amount1)
+                    amount0Max: uint128(amount0 + amounts.revenueFee0),
+                    amount1Max: uint128(amount1 + amounts.revenueFee1)
                 })
             );
+            if (amounts.revenueFee0 > 0) {
+                IERC20(token0).safeTransfer(revenueFeeTreasury, amounts.revenueFee0);
+            }
+            if (amounts.revenueFee1 > 0) {
+                IERC20(token1).safeTransfer(revenueFeeTreasury, amounts.revenueFee1);
+            }
             // Send NFT to owner, we don't need it anymore
             positionManager.safeTransferFrom(address(this), receiver, positionTokenId, "");
         } else {
@@ -370,23 +402,62 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
             (uint256 amount0Total, uint256 amount1Total) =
                 uniswapV3Wrapper.burn(address(this), positionTokenId, totalBalance, address(this));
 
-            IYLDROracle oracle = IYLDROracle(addressesProvider.getPriceOracle());
-
-            uint256 token0Price = oracle.getAssetPrice(token0);
-            uint256 token1Price = oracle.getAssetPrice(token1);
-            uint256 token0Decimals = IERC20Metadata(token0).decimals();
-            uint256 token1Decimals = IERC20Metadata(token1).decimals();
-
-            uint256 usdValue = amount0Total * token0Price / (10 ** token0Decimals)
-                + amount1Total * token1Price / (10 ** token1Decimals);
-
-            // Now we can calculate amounts to withdraw for repayments
-            amount0 = Math.mulDiv(usdAmountNeeded, amount0Total, usdValue);
-            amount1 = Math.mulDiv(usdAmountNeeded, amount1Total, usdValue);
+            uint256 usdAmountNeeded = amounts.usdRepayment + amounts.usdRevenueFee;
+            amount0 = Math.mulDiv(usdAmountNeeded, amount0Total, amounts.usdPositionValue);
+            amount1 = Math.mulDiv(usdAmountNeeded, amount1Total, amounts.usdPositionValue);
 
             // Send leftovers to user
             IERC20(token0).safeTransfer(receiver, amount0Total - amount0);
             IERC20(token1).safeTransfer(receiver, amount1Total - amount1);
+
+            if (amounts.usdRevenueFee > 0) {
+                uint256 amount0ToTreasury = amount0 * amounts.usdRevenueFee / usdAmountNeeded;
+                uint256 amount1ToTreasury = amount1 * amounts.usdRevenueFee / usdAmountNeeded;
+                amount0 -= amount0ToTreasury;
+                amount1 -= amount1ToTreasury;
+                IERC20(token0).safeTransfer(revenueFeeTreasury, amount0ToTreasury);
+                IERC20(token1).safeTransfer(revenueFeeTreasury, amount1ToTreasury);
+            }
+        }
+    }
+
+    struct DeleverageAmounts {
+        uint256 usdPositionValue;
+        uint256 usdRepayment;
+        uint256 usdRevenueFee;
+        uint256 revenueFee0;
+        uint256 revenueFee1;
+    }
+
+    function _calculateDeleverageAmounts(
+        uint256 debtAmount,
+        uint256 maxSwapSlippage,
+        uint256 balance,
+        uint256 wrappedTotalSupply
+    ) internal view returns (DeleverageAmounts memory amounts) {
+        IYLDROracle oracle = IYLDROracle(addressesProvider.getPriceOracle());
+        amounts.usdPositionValue =
+            balance * oracle.getERC1155AssetPrice(address(uniswapV3Wrapper), positionTokenId) / wrappedTotalSupply;
+        uint256 debtValue =
+            debtAmount * oracle.getAssetPrice(borrowedToken) / (10 ** IERC20Metadata(borrowedToken).decimals());
+
+        // Consider slippage, if we will end up with more than needed, rest will be sent to receiver as well
+        amounts.usdRepayment = Math.min(amounts.usdPositionValue, Math.mulDiv(debtValue, (1e4 + maxSwapSlippage), 1e4));
+        if (revenueFee > 0) {
+            (uint256 fees0, uint256 fees1) = uniswapV3Wrapper.getPendingFees(positionTokenId);
+            amounts.revenueFee0 = Math.mulDiv(fees0 - lastFees0, revenueFee, 1e4);
+            amounts.revenueFee1 = Math.mulDiv(fees1 - lastFees1, revenueFee, 1e4);
+
+            amounts.usdRevenueFee = amounts.revenueFee0 * oracle.getAssetPrice(token0)
+                / (10 ** IERC20Metadata(token0).decimals())
+                + amounts.revenueFee1 * oracle.getAssetPrice(token1) / (10 ** IERC20Metadata(token1).decimals());
+
+            uint256 maxUSDRevenueFee = amounts.usdPositionValue - amounts.usdRepayment;
+            if (amounts.usdRevenueFee > maxUSDRevenueFee) {
+                amounts.revenueFee0 = amounts.revenueFee0 * maxUSDRevenueFee / amounts.usdRevenueFee;
+                amounts.revenueFee1 = amounts.revenueFee1 * maxUSDRevenueFee / amounts.usdRevenueFee;
+                amounts.usdRevenueFee = maxUSDRevenueFee;
+            }
         }
     }
 
@@ -406,22 +477,15 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
             pool.withdrawERC1155(address(uniswapV3Wrapper), positionTokenId, type(uint256).max, address(this));
         uint256 wrappedTotalSupply = uniswapV3Wrapper.totalSupply(positionTokenId);
 
-        // Calculate amount of LP which will be used for repayment
-        uint256 USDAmountForRepayment;
-        {
-            IYLDROracle oracle = IYLDROracle(addressesProvider.getPriceOracle());
-            uint256 positionValue =
-                balance * oracle.getERC1155AssetPrice(address(uniswapV3Wrapper), positionTokenId) / wrappedTotalSupply;
-            uint256 debtValue = (amount + flashFee) * oracle.getAssetPrice(borrowedToken)
-                / (10 ** IERC20Metadata(borrowedToken).decimals());
-
-            // Consider slippage, if we will end up with more than needed, rest will be sent to receiver as well
-            USDAmountForRepayment =
-                Math.min(positionValue, Math.mulDiv(debtValue, (10000 + params.maxSwapSlippage), 10000));
-        }
+        DeleverageAmounts memory amounts = _calculateDeleverageAmounts({
+            debtAmount: amount + flashFee,
+            maxSwapSlippage: params.maxSwapSlippage,
+            balance: balance,
+            wrappedTotalSupply: wrappedTotalSupply
+        });
 
         // Aquire amounts to swap into borrowed token
-        (uint256 amount0, uint256 amount1) = _burnPartAndWithdrawRest(USDAmountForRepayment, params.receiver);
+        (uint256 amount0, uint256 amount1) = _burnPartAndWithdrawRest(amounts, params.receiver);
 
         // Swap tokens to repay debt
         uint256 amountForRepayment = _swap(
@@ -453,6 +517,17 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
                 amount1Max: type(uint128).max
             })
         );
+
+        if (revenueFee > 0) {
+            uint256 fees0ToTreasury = Math.mulDiv(amount0 - lastFees0, revenueFee, 1e4);
+            uint256 fees1ToTreasury = Math.mulDiv(amount1 - lastFees1, revenueFee, 1e4);
+
+            amount0 -= fees0ToTreasury;
+            amount1 -= fees1ToTreasury;
+
+            IERC20(token0).safeTransfer(revenueFeeTreasury, fees0ToTreasury);
+            IERC20(token1).safeTransfer(revenueFeeTreasury, fees1ToTreasury);
+        }
 
         // Divide and swap rewards
         (bool zeroForOne, uint256 amount) = _determineNeededSwap(amount0, amount1);
@@ -502,6 +577,10 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         );
 
         pool.borrow(borrowedToken, debtAmount + flashFee, 0, address(this));
+
+        if (revenueFee > 0) {
+            _updateLastPendingFees();
+        }
     }
 
     function executeOperation(
@@ -575,5 +654,11 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         ).balanceOf(address(this));
 
         _takeFlashloan(flashloanProvider, borrowedToken, debtToCover, FlashloanPurpose.Compound, abi.encode(params));
+    }
+
+    function _updateLastPendingFees() internal {
+        (uint256 fees0, uint256 fees1) = uniswapV3Wrapper.getPendingFees(positionTokenId);
+        lastFees0 = uint128(fees0);
+        lastFees1 = uint128(fees1);
     }
 }

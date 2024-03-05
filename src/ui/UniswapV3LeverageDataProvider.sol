@@ -13,23 +13,38 @@ import {IUniswapV3LeverageDataProvider} from "../interfaces/IUniswapV3LeverageDa
 import {UniswapV3LeveragedPosition} from "../leverage/UniswapV3LeveragedPosition.sol";
 import {IPoolAddressesProvider} from "@yldr-lending/core/src/interfaces/IPoolAddressesProvider.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
+import {PercentageMath} from "@yldr-lending/core/src/protocol/libraries/math/PercentageMath.sol";
 
 contract UniswapV3LeverageDataProvider is IUniswapV3LeverageDataProvider {
+    using PercentageMath for uint256;
+
     IUniswapV3DataProvider public immutable uniswapV3DataProvider;
 
     constructor(IUniswapV3DataProvider _uniswapV3DataProvider) {
         uniswapV3DataProvider = _uniswapV3DataProvider;
     }
 
-    function getPositionData(address position) public view returns (PositionData memory) {
-        uint256 tokenId = UniswapV3LeveragedPosition(position).positionTokenId();
+    function getPositionData(address _position) public view returns (PositionData memory) {
+        UniswapV3LeveragedPosition position = UniswapV3LeveragedPosition(_position);
+        uint256 tokenId = position.positionTokenId();
         IUniswapV3DataProvider.PositionData memory positionData = uniswapV3DataProvider.getPositionData(tokenId);
-        address debtAsset = UniswapV3LeveragedPosition(position).borrowedToken();
-        IPoolAddressesProvider addressesProvider = UniswapV3LeveragedPosition(position).addressesProvider();
+        address debtAsset = position.borrowedToken();
+        IPoolAddressesProvider addressesProvider = position.addressesProvider();
         IPool pool = IPool(addressesProvider.getPool());
-        uint256 debt = IERC20(pool.getReserveData(debtAsset).variableDebtTokenAddress).balanceOf(position);
+        uint256 debt = IERC20(pool.getReserveData(debtAsset).variableDebtTokenAddress).balanceOf(_position);
 
-        return PositionData({uniswapV3Position: positionData, debt: debt, debtAsset: debtAsset});
+        (uint256 lastFees0, uint256 lastFees1) = (position.lastFees0(), position.lastFees1());
+        uint256 revenueFee = position.revenueFee();
+        uint256 revenueFee0 = (positionData.fee0 - lastFees0).percentMul(revenueFee);
+        uint256 revenueFee1 = (positionData.fee1 - lastFees1).percentMul(revenueFee);
+
+        return PositionData({
+            uniswapV3Position: positionData,
+            debt: debt,
+            debtAsset: debtAsset,
+            revenueFee0: revenueFee0,
+            revenueFee1: revenueFee1
+        });
     }
 
     function getPositionsData(address[] memory positions) public view returns (PositionData[] memory datas) {

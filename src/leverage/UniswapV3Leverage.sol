@@ -19,13 +19,18 @@ contract UniswapV3Leverage is IUniswapV3Leverage, IBeacon, Ownable, ERC1155Holde
     INonfungiblePositionManager public immutable positionManager;
     address private leveragePositionImplementation;
 
-    constructor(IPoolAddressesProvider _addressesProvider, IERC1155UniswapV3Wrapper _uniswapV3Wrapper)
-        Ownable(msg.sender)
-    {
+    constructor(
+        IPoolAddressesProvider _addressesProvider,
+        IERC1155UniswapV3Wrapper _uniswapV3Wrapper,
+        uint256 _revenueFee,
+        address _revenueFeeTreasury
+    ) Ownable(msg.sender) {
         addressesProvider = _addressesProvider;
         uniswapV3Wrapper = _uniswapV3Wrapper;
         positionManager = _uniswapV3Wrapper.positionManager();
-        leveragePositionImplementation = address(new UniswapV3LeveragedPosition(addressesProvider, _uniswapV3Wrapper));
+        leveragePositionImplementation = address(
+            new UniswapV3LeveragedPosition(addressesProvider, _uniswapV3Wrapper, _revenueFee, _revenueFeeTreasury)
+        );
     }
 
     function onERC721Received(address, address from, uint256 tokenId, bytes memory data)

@@ -28,7 +28,7 @@ contract DeployScript is Script {
         WalletBalanceProvider walletBalancesProvider = new WalletBalanceProvider();
         WETHGateway wETHGateway = new WETHGateway(weth, IPool(addressesProvider.getPool()));
         UniswapV3DataProvider uniswapV3DataProvider = new UniswapV3DataProvider(positionManager);
-        UniswapV3Leverage leverage = new UniswapV3Leverage(addressesProvider, uniswapV3Wrapper);
+        UniswapV3Leverage leverage = new UniswapV3Leverage(addressesProvider, uniswapV3Wrapper, 1000, address(this));
         UniswapV3LeverageDataProvider uniswapV3LeverageDataProvider =
             new UniswapV3LeverageDataProvider(uniswapV3DataProvider);
         UniswapV3DepositZap uniswapV3DepositZap = new UniswapV3DepositZap(addressesProvider, uniswapV3Wrapper);
