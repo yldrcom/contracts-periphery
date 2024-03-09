@@ -26,11 +26,11 @@ contract UniswapV3LeverageDataProvider is IUniswapV3LeverageDataProvider {
         uniswapV3Leverage = _uniswapV3Leverage;
     }
 
-    function getGlobalRevenueFee() public view returns (uint256) {
+    function getGlobalRevenueFee() public view override returns (uint256) {
         return UniswapV3LeveragedPosition(uniswapV3Leverage.implementation()).revenueFeePercent();
     }
 
-    function getPositionData(address _position) public view returns (PositionData memory) {
+    function getPositionData(address _position) public view override returns (PositionData memory) {
         UniswapV3LeveragedPosition position = UniswapV3LeveragedPosition(_position);
         uint256 tokenId = position.positionTokenId();
         IUniswapV3DataProvider.PositionData memory positionData = uniswapV3DataProvider.getPositionData(tokenId);

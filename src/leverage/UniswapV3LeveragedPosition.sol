@@ -105,6 +105,7 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         IAssetConverter assetConverter;
         uint256 maxSwapSlippage;
         address receiver;
+        bool withdrawLiquidity;
     }
 
     /// @notice Params which are used to compound fees
@@ -230,7 +231,7 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         uint256 amount1USD = amount1 * cache.token1Price / (10 ** cache.token1Decimals);
 
         amountToSwapFor0 = amount * amount0USD / (amount0USD + amount1USD);
-        amountToSwapFor1 = amount * amount1USD / (amount0USD + amount1USD);
+        amountToSwapFor1 = amount - amountToSwapFor0;
     }
 
     struct DetermineSwapVars {
@@ -390,87 +391,141 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
     ///
     /// In case when we are not the only owner of the position (this can happen when position was liquidated), we can't unwrap it,
     /// so we burn all shares, receive token0 and token1 amounts and send part of it to receiver
-    function _burnPartAndWithdrawRest(Cache memory cache, DeleverageAmounts memory amounts, address receiver)
-        internal
-        returns (uint256 amount0, uint256 amount1)
-    {
-        uint256 totalBalance = uniswapV3Wrapper.balanceOf(address(this), cache.positionTokenId);
-        if (uniswapV3Wrapper.totalSupply(cache.positionTokenId) == totalBalance) {
-            (uint256 usdLiquidity, uint256 usdFees) = _getPositionUSDValues(cache);
+    function _burnPartAndWithdrawRest(
+        Cache memory cache,
+        DeleverageAmounts memory amounts,
+        address receiver,
+        bool withdrawLiquidity
+    ) internal returns (uint256 amount0ForRepayment, uint256 amount1ForRepayment) {
+        if (amounts.wrappedBalance == amounts.wrappedTotalSupply) {
             // If we are the only owner of the position, we can just unwrap it and withdraw liquidity via position manager
             uniswapV3Wrapper.unwrap(address(this), cache.positionTokenId, address(this));
-            (,,,,,,, uint128 liquidity,,,,) = positionManager.positions(cache.positionTokenId);
-            uint256 liquidityToBurn;
-            uint256 feesPercentToUseForRepayment;
 
-            // We want to avoid touching user fees during repayment if possible.
-            if (amounts.usdRepayment <= usdLiquidity) {
-                liquidityToBurn = Math.mulDiv(liquidity, amounts.usdRepayment, usdLiquidity);
-            } else {
-                liquidityToBurn = liquidity;
-                feesPercentToUseForRepayment = Math.mulDiv(amounts.usdRepayment - usdLiquidity, 1e4, usdFees);
-            }
-            (amount0, amount1) = positionManager.decreaseLiquidity(
-                INonfungiblePositionManager.DecreaseLiquidityParams({
-                    tokenId: cache.positionTokenId,
-                    liquidity: uint128(liquidityToBurn),
-                    amount0Min: 0,
-                    amount1Min: 0,
-                    deadline: block.timestamp
-                })
-            );
+            (uint256 liquidityToBurn, uint256 liquidityForRepayment, uint256 feesPercentForRepayment) =
+                _getAmountsForOwned(cache, amounts, withdrawLiquidity);
+
             {
-                // At this point, tokensOwed contains fees + amounts just withdrawn
-                (,,,,,,,,,, uint256 tokensOwed0, uint256 tokensOwed1) = positionManager.positions(cache.positionTokenId);
-                amount0 += Math.mulDiv(tokensOwed0 - amount0, feesPercentToUseForRepayment, 1e4);
-                amount1 += Math.mulDiv(tokensOwed1 - amount1, feesPercentToUseForRepayment, 1e4);
+                // Those amounts contain amounts returned in exchange for redeemed liquidity, without fees.
+                (uint256 amount0FromLiquidity, uint256 amount1FromLiquidity) = positionManager.decreaseLiquidity(
+                    INonfungiblePositionManager.DecreaseLiquidityParams({
+                        tokenId: cache.positionTokenId,
+                        liquidity: uint128(liquidityToBurn),
+                        amount0Min: 0,
+                        amount1Min: 0,
+                        deadline: block.timestamp
+                    })
+                );
+
+                // Only take liquidityForRepayment part of the returned amounts.
+                amount0ForRepayment = Math.mulDiv(amount0FromLiquidity, liquidityForRepayment, liquidityToBurn);
+                amount1ForRepayment = Math.mulDiv(amount1FromLiquidity, liquidityForRepayment, liquidityToBurn);
             }
-            positionManager.collect(
+
+            if (feesPercentForRepayment > 0) {
+                amount0ForRepayment += Math.mulDiv(amounts.fees0, feesPercentForRepayment, 1e4);
+                amount1ForRepayment += Math.mulDiv(amounts.fees1, feesPercentForRepayment, 1e4);
+            }
+
+            (uint256 amount0Total, uint256 amount1Total) = positionManager.collect(
                 INonfungiblePositionManager.CollectParams({
                     tokenId: cache.positionTokenId,
                     recipient: address(this),
-                    amount0Max: uint128(amount0 + amounts.revenueFee0),
-                    amount1Max: uint128(amount1 + amounts.revenueFee1)
+                    // Collect everything if we are withdrawing liquidity, otherwise only amounts for repayment and revenue fees.
+                    amount0Max: withdrawLiquidity ? type(uint128).max : uint128(amount0ForRepayment + amounts.revenueFee0),
+                    amount1Max: withdrawLiquidity ? type(uint128).max : uint128(amount1ForRepayment + amounts.revenueFee1)
                 })
             );
+
             if (amounts.revenueFee0 > 0) {
-                IERC20(token0).safeTransfer(revenueFeeTreasury, amounts.revenueFee0);
+                IERC20(cache.token0).safeTransfer(revenueFeeTreasury, amounts.revenueFee0);
             }
             if (amounts.revenueFee1 > 0) {
-                IERC20(token1).safeTransfer(revenueFeeTreasury, amounts.revenueFee1);
+                IERC20(cache.token1).safeTransfer(revenueFeeTreasury, amounts.revenueFee1);
             }
-            // Send NFT to owner, we don't need it anymore
-            positionManager.safeTransferFrom(address(this), receiver, positionTokenId, "");
+
+            if (withdrawLiquidity) {
+                IERC20(cache.token0).safeTransfer(receiver, (amount0Total - amount0ForRepayment - amounts.revenueFee0));
+                IERC20(cache.token1).safeTransfer(receiver, (amount1Total - amount1ForRepayment - amounts.revenueFee1));
+            } else {
+                // Send NFT to owner, we don't need it anymore
+                positionManager.safeTransferFrom(address(this), receiver, cache.positionTokenId, "");
+            }
         } else {
             // If we are not the only owner of LP, we can't unwrap it, so we need to burn our shares
             (uint256 amount0Total, uint256 amount1Total) =
-                uniswapV3Wrapper.burn(address(this), positionTokenId, totalBalance, address(this));
+                uniswapV3Wrapper.burn(address(this), positionTokenId, amounts.wrappedBalance, address(this));
 
             uint256 usdAmountNeeded = amounts.usdRepayment + amounts.usdRevenueFee;
-            amount0 = Math.mulDiv(usdAmountNeeded, amount0Total, amounts.usdPositionValue);
-            amount1 = Math.mulDiv(usdAmountNeeded, amount1Total, amounts.usdPositionValue);
+            amount0ForRepayment = Math.mulDiv(usdAmountNeeded, amount0Total, amounts.usdPositionValue);
+            amount1ForRepayment = Math.mulDiv(usdAmountNeeded, amount1Total, amounts.usdPositionValue);
 
             // Send leftovers to user
-            IERC20(token0).safeTransfer(receiver, amount0Total - amount0);
-            IERC20(token1).safeTransfer(receiver, amount1Total - amount1);
+            IERC20(token0).safeTransfer(receiver, amount0Total - amount0ForRepayment);
+            IERC20(token1).safeTransfer(receiver, amount1Total - amount1ForRepayment);
 
             if (amounts.usdRevenueFee > 0) {
-                uint256 amount0ToTreasury = amount0 * amounts.usdRevenueFee / usdAmountNeeded;
-                uint256 amount1ToTreasury = amount1 * amounts.usdRevenueFee / usdAmountNeeded;
-                amount0 -= amount0ToTreasury;
-                amount1 -= amount1ToTreasury;
+                uint256 amount0ToTreasury = amount0ForRepayment * amounts.usdRevenueFee / usdAmountNeeded;
+                uint256 amount1ToTreasury = amount1ForRepayment * amounts.usdRevenueFee / usdAmountNeeded;
+                amount0ForRepayment -= amount0ToTreasury;
+                amount1ForRepayment -= amount1ToTreasury;
                 IERC20(token0).safeTransfer(revenueFeeTreasury, amount0ToTreasury);
                 IERC20(token1).safeTransfer(revenueFeeTreasury, amount1ToTreasury);
             }
         }
     }
 
+    /// @notice Returns amounts which should be used for deleveraging position in cases when we are operating on an owned position.
+    /// @return liquidityToBurn Total amount of liquidity to burn. 100% if withdrawLiquidity is true,
+    /// otherwise only as much as we need for debt repayment
+    /// @return liquidityForRepayment Amount of liquidity to burn for debt repayment.
+    /// @return feePercentForRepayment Fee percent to be used for debt repayment.
+    /// We are trying to avoid touching user fees if possible, so this is set if liquidity is not enough for full debt repayment.
+    function _getAmountsForOwned(Cache memory cache, DeleverageAmounts memory amounts, bool withdrawLiquidity)
+        internal
+        view
+        returns (uint256 liquidityToBurn, uint256 liquidityForRepayment, uint256 feePercentForRepayment)
+    {
+        (,,,,,,, uint128 liquidity,,,,) = positionManager.positions(cache.positionTokenId);
+
+        // We want to avoid touching user fees during repayment if possible.
+        if (amounts.usdRepayment <= amounts.usdLiquidityValue) {
+            liquidityForRepayment = Math.mulDiv(liquidity, amounts.usdRepayment, amounts.usdLiquidityValue);
+        } else {
+            liquidityForRepayment = liquidity;
+            feePercentForRepayment =
+                Math.mulDiv(amounts.usdRepayment - amounts.usdLiquidityValue, 1e4, amounts.usdFeesValue);
+        }
+
+        if (withdrawLiquidity) {
+            liquidityToBurn = liquidity;
+        } else {
+            liquidityToBurn = liquidityForRepayment;
+        }
+    }
+
+    /// @param usdPositionValue value of position liquidity + fees in USD
+    /// @param usdLiquidityValue value of position liquidity in USD
+    /// @param usdFeesValue value of position fees in USD
+    /// @param usdRepayment value needed for debt repayment in USD, including potential slippage costs
+    /// @param usdRevenueFee value of revenue fee in USD
+    /// @param fees0 amount of token0 fees
+    /// @param fees1 amount of token1 fees
+    /// @param revenueFee0 amount of token0 revenue fee
+    /// @param revenueFee1 amount of token1 revenue fee
+    /// @param wrappedBalance balance of wrapped position tokens
+    /// @param wrappedTotalSupply total supply of wrapped position tokens
     struct DeleverageAmounts {
         uint256 usdPositionValue;
+        uint256 usdLiquidityValue;
+        uint256 usdFeesValue;
         uint256 usdRepayment;
         uint256 usdRevenueFee;
+        uint256 fees0;
+        uint256 fees1;
         uint256 revenueFee0;
         uint256 revenueFee1;
+        uint256 wrappedBalance;
+        uint256 wrappedTotalSupply;
     }
 
     function _calculateDeleverageAmounts(
@@ -480,17 +535,19 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         uint256 balance,
         uint256 wrappedTotalSupply
     ) internal view returns (DeleverageAmounts memory amounts) {
-        amounts.usdPositionValue =
-            balance * cache.oracle.getERC1155AssetPrice(address(uniswapV3Wrapper), positionTokenId) / wrappedTotalSupply;
+        amounts.wrappedBalance = balance;
+        amounts.wrappedTotalSupply = wrappedTotalSupply;
+        (amounts.usdLiquidityValue, amounts.usdFeesValue) = _getPositionUSDValues(cache);
+        amounts.usdPositionValue = balance * (amounts.usdLiquidityValue + amounts.usdFeesValue) / wrappedTotalSupply;
         uint256 debtValue =
             debtAmount * cache.oracle.getAssetPrice(borrowedToken) / (10 ** IERC20Metadata(borrowedToken).decimals());
 
         // Consider slippage, if we will end up with more than needed, rest will be sent to receiver as well
         amounts.usdRepayment = Math.min(amounts.usdPositionValue, Math.mulDiv(debtValue, (1e4 + maxSwapSlippage), 1e4));
+        (amounts.fees0, amounts.fees1) = uniswapV3Wrapper.getPendingFees(cache.positionTokenId);
         if (cache.revenueFee > 0) {
-            (uint256 fees0, uint256 fees1) = uniswapV3Wrapper.getPendingFees(cache.positionTokenId);
-            amounts.revenueFee0 = Math.mulDiv(fees0 - lastFees0, cache.revenueFee, 1e4);
-            amounts.revenueFee1 = Math.mulDiv(fees1 - lastFees1, cache.revenueFee, 1e4);
+            amounts.revenueFee0 = Math.mulDiv(amounts.fees0 - lastFees0, cache.revenueFee, 1e4);
+            amounts.revenueFee1 = Math.mulDiv(amounts.fees1 - lastFees1, cache.revenueFee, 1e4);
 
             amounts.usdRevenueFee = amounts.revenueFee0 * cache.token0Price / (10 ** cache.token0Decimals)
                 + amounts.revenueFee1 * cache.token1Price / (10 ** cache.token1Decimals);
@@ -531,7 +588,8 @@ contract UniswapV3LeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721
         });
 
         // Aquire amounts to swap into borrowed token
-        (uint256 amount0, uint256 amount1) = _burnPartAndWithdrawRest(cache, amounts, params.receiver);
+        (uint256 amount0, uint256 amount1) =
+            _burnPartAndWithdrawRest(cache, amounts, params.receiver, params.withdrawLiquidity);
 
         // Swap tokens to repay debt
         uint256 amountForRepayment = _swap(

@@ -13,6 +13,8 @@ interface IUniswapV3LeverageDataProvider {
         uint256 revenueFeePercent;
     }
 
+    function getGlobalRevenueFee() external view returns (uint256);
+
     function getPositionData(address position) external view returns (PositionData memory);
 
     function getPositionsData(address[] memory positions) external view returns (PositionData[] memory datas);
