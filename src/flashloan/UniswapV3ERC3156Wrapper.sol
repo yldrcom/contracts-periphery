@@ -49,6 +49,8 @@ contract UniswapV3ERC3156Wrapper is IERC3156FlashLender, IUniswapV3FlashCallback
         override
         returns (bool)
     {
+        require(token == address(token0) || token == address(token1), "Token is not supported");
+
         bytes memory data = abi.encode(
             CallbackData({receiver: receiver, initiator: msg.sender, token: token, amount: amount, data: userData})
         );

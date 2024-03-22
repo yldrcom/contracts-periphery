@@ -208,7 +208,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             "Too much leftovers"
         );
 
-        data.position = UniswapV3LeveragedPosition(StdUtils.computeCreateAddress(address(uniswapV3Leverage), nonce));
+        data.position = UniswapV3LeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), nonce));
 
         assertEq(usdc.balanceOf(address(data.position)), 0, "position has USDC after creation");
         assertEq(weth.balanceOf(address(data.position)), 0, "position has WETH after creation");
@@ -394,7 +394,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         );
 
         UniswapV3LeveragedPosition position =
-            UniswapV3LeveragedPosition(StdUtils.computeCreateAddress(address(uniswapV3Leverage), 2));
+            UniswapV3LeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), 2));
 
         (uint160 currentSqrtPrice,,,,,,) = position.uniswapV3Pool().slot0();
         vm.stopPrank();
@@ -432,7 +432,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         );
 
         UniswapV3LeveragedPosition position =
-            UniswapV3LeveragedPosition(StdUtils.computeCreateAddress(address(uniswapV3Leverage), 2));
+            UniswapV3LeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), 2));
 
         (uint160 currentSqrtPrice,,,,,,) = position.uniswapV3Pool().slot0();
         vm.stopPrank();
@@ -508,7 +508,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         );
 
         UniswapV3LeveragedPosition position =
-            UniswapV3LeveragedPosition(StdUtils.computeCreateAddress(address(uniswapV3Leverage), nonce));
+            UniswapV3LeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), nonce));
 
         vars.revenueFee = 1000 * vars.debtValue / (vars.debtValue + vars.positionValue);
         assertApproxEqRel(position.revenueFee(), vars.revenueFee, 10 ** 16); // 1% delta allowed
@@ -651,5 +651,61 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         vm.revertTo(snapshotId);
         vm.clearMockedCalls();
         test(false);
+    }
+
+    function test_rebalance() public {
+        LeveragePositionData memory pos = _aquireLeveragedPosition(2000e6, 1e18, 1000e6);
+        (,,,,, int24 tickLower, int24 tickUpper,,,,,) = uniswapV3Testing.positionManager.positions(pos.tokenId);
+
+        uint256 positionValueBefore = _calculatePositionNetWorth(pos.position);
+
+        pos.position.rebalance(
+            aaveFlashloan,
+            UniswapV3LeveragedPosition.RebalanceParams({
+                assetConverter: assetConverter,
+                maxSwapSlippage: 50,
+                newTickLower: tickUpper,
+                newTickUpper: tickUpper + (tickUpper - tickLower)
+            })
+        );
+
+        assertNotEq(pos.position.positionTokenId(), pos.tokenId);
+
+        (,,,,, int24 newTickLower, int24 newTickUpper, uint128 newLiquidity,,,,) =
+            uniswapV3Testing.positionManager.positions(pos.position.positionTokenId());
+
+        assertEq(newTickLower, tickUpper);
+        assertEq(newTickUpper, tickUpper + (tickUpper - tickLower));
+        assertGt(newLiquidity, 0);
+
+        uint256 positionValueAfter = _calculatePositionNetWorth(pos.position);
+        assertApproxEqRel(positionValueAfter, positionValueBefore, 0.01e18);
+    }
+
+    function _calculatePositionNetWorth(UniswapV3LeveragedPosition position) internal view returns (uint256) {
+        IYLDROracle oracle = IYLDROracle(poolTesting.addressesProvider.getPriceOracle());
+        IPool pool = IPool(poolTesting.addressesProvider.getPool());
+
+        uint256 tokenId = position.positionTokenId();
+
+        uint256 balance = IERC1155(pool.getERC1155ReserveData(address(uniswapV3Wrapper)).nTokenAddress).balanceOf(
+            address(position), tokenId
+        );
+        uint256 wrappedTotalSupply = uniswapV3Wrapper.totalSupply(tokenId);
+
+        UniswapV3DataProvider.PositionData memory positionData = uniswapV3DataProvider.getPositionData(tokenId);
+
+        uint256 positionValue = balance
+            * _getUsdValue(positionData.amount0 + positionData.fee0, positionData.amount1 + positionData.fee1)
+            / wrappedTotalSupply;
+
+        address borrowedToken = position.borrowedToken();
+        uint256 borrowedPrice = oracle.getAssetPrice(borrowedToken);
+
+        uint256 debtAmount =
+            IERC20(pool.getReserveData(borrowedToken).variableDebtTokenAddress).balanceOf(address(position));
+        uint256 debtValue = borrowedPrice * debtAmount / (10 ** IERC20Metadata(borrowedToken).decimals());
+
+        return positionValue - debtValue;
     }
 }

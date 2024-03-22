@@ -13,6 +13,7 @@ import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/inter
 import {UniswapV3LeverageDataProvider} from "../src/ui/UniswapV3LeverageDataProvider.sol";
 import {UniswapV3DepositZap} from "../src/UniswapV3DepositZap.sol";
 import {PositionManagerLeverageWrapper} from "../src/leverage/PositionManagerLeverageWrapper.sol";
+import {CombinedERC3156Wrapper, IERC3156FlashLender} from "../src/flashloan/CombinedERC3156Wrapper.sol";
 
 contract DeployScript is Script {
     function periphery(
