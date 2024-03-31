@@ -6,12 +6,11 @@ import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
 import {console2} from "forge-std/console2.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import {ERC1155UniswapV3Wrapper} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155UniswapV3Wrapper.sol";
-import {ERC1155UniswapV3ConfigurationProvider} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155UniswapV3ConfigurationProvider.sol";
-import {ERC1155UniswapV3Oracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155UniswapV3Oracle.sol";
+    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/ERC1155UniswapV3Wrapper.sol";
+import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
+import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
 import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {UniswapV3Leverage, UniswapV3LeveragedPosition} from "../src/leverage/UniswapV3Leverage.sol";
+import {YLDRCLLeverage, BaseCLLeveragedPosition} from "../src/leverage/YLDRCLLeverage.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {AaveERC3156Wrapper, IPool as IAavePool} from "../src/flashloan/AaveERC3156Wrapper.sol";
@@ -22,9 +21,14 @@ import {StdUtils} from "forge-std/StdUtils.sol";
 import {IYLDROracle, IPriceOracleGetter} from "@yldr-lending/core/src/interfaces/IYLDROracle.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import {PositionManagerLeverageWrapper} from "../src/leverage/PositionManagerLeverageWrapper.sol";
+import {UniswapV3CreateAndLeverage} from "../src/leverage/create-and-leverage/UniswapV3CreateAndLeverage.sol";
+import {BaseCLLeveragedPosition} from "../src/leverage/position-impls/BaseCLLeveragedPosition.sol";
+import {UniswapV3LeveragedPosition} from "../src/leverage/position-impls/UniswapV3LeveragedPosition.sol";
+import {ERC1155CLWrapperConfigurationProvider} from
+    "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperConfigurationProvider.sol";
+import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/BaseCLAdapter.sol";
 
-contract PositionManagerLeverageWrapperTest is BaseTest {
+contract UniswapV3CreateAndLeverageTest is BaseTest {
     using PoolTesting for PoolTesting.Data;
     using UniswapV3Testing for UniswapV3Testing.Data;
     using SafeERC20 for IERC20Metadata;
@@ -37,9 +41,9 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
     UniswapV3Testing.Data uniswapV3Testing;
 
     ERC1155UniswapV3Wrapper uniswapV3Wrapper;
-    UniswapV3Leverage uniswapV3Leverage;
+    YLDRCLLeverage uniswapV3Leverage;
 
-    PositionManagerLeverageWrapper leverageWrapper;
+    UniswapV3CreateAndLeverage leverageWrapper;
 
     AssetConverter assetConverter;
     UniswapV3Converter uniswapV3Converter;
@@ -59,9 +63,9 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
         uniswapV3Wrapper = ERC1155UniswapV3Wrapper(
             address(
                 new TransparentUpgradeableProxy(
-                    address(new ERC1155UniswapV3Wrapper()),
+                    address(new ERC1155UniswapV3Wrapper(address(uniswapV3Testing.positionManager))),
                     ADMIN,
-                    abi.encodeCall(ERC1155UniswapV3Wrapper.initialize, (uniswapV3Testing.positionManager))
+                    abi.encodeCall(ERC1155UniswapV3Wrapper.initialize, ())
                 )
             )
         );
@@ -97,11 +101,11 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
         poolTesting.addERC1155Reserve(
             address(uniswapV3Wrapper),
             address(
-                new ERC1155UniswapV3ConfigurationProvider(
+                new ERC1155CLWrapperConfigurationProvider(
                     IPool(poolTesting.addressesProvider.getPool()), uniswapV3Wrapper
                 )
             ),
-            address(new ERC1155UniswapV3Oracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
+            address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
             ADMIN,
             0.2e4
         );
@@ -130,9 +134,11 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
 
         aaveFlashloan = new AaveERC3156Wrapper(IAavePool(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2));
 
-        uniswapV3Leverage = new UniswapV3Leverage(poolTesting.addressesProvider, uniswapV3Wrapper, 1000, address(this));
+        UniswapV3LeveragedPosition implementation =
+            new UniswapV3LeveragedPosition(poolTesting.addressesProvider, uniswapV3Wrapper, 1000, address(this));
+        uniswapV3Leverage = new YLDRCLLeverage(implementation);
 
-        leverageWrapper = new PositionManagerLeverageWrapper(uniswapV3Testing.positionManager, uniswapV3Leverage);
+        leverageWrapper = new UniswapV3CreateAndLeverage(uniswapV3Leverage);
 
         // Supply so the pool has funds for leverage operations
         vm.startPrank(BOB);
@@ -148,7 +154,7 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
         vm.startPrank(ALICE);
     }
 
-    function test_reverts_if_no_args() public {
+    function test_mint() public {
         usdc.forceApprove(address(leverageWrapper), type(uint256).max);
         weth.forceApprove(address(leverageWrapper), type(uint256).max);
 
@@ -163,7 +169,7 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
         tickUpper -= tickUpper % tickSpacing;
 
         leverageWrapper.mint(
-            INonfungiblePositionManager.MintParams({
+            BaseCLAdapter.MintParams({
                 token0: address(usdc),
                 token1: address(weth),
                 fee: 500,
@@ -176,7 +182,7 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
                 recipient: address(this),
                 deadline: type(uint256).max
             }),
-            UniswapV3LeveragedPosition.PositionInitParams({
+            BaseCLLeveragedPosition.PositionInitParams({
                 tokenId: 0,
                 tokenToBorrow: address(usdc),
                 amountToBorrow: 1000 * (10 ** 6),
@@ -187,8 +193,8 @@ contract PositionManagerLeverageWrapperTest is BaseTest {
             })
         );
 
-        UniswapV3LeveragedPosition position =
-            UniswapV3LeveragedPosition(StdUtils.computeCreateAddress(address(uniswapV3Leverage), 2));
+        BaseCLLeveragedPosition position =
+            BaseCLLeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), 1));
 
         assertEq(position.owner(), ALICE);
     }

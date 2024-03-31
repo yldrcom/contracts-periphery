@@ -6,12 +6,11 @@ import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
 import {console2} from "forge-std/console2.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import {ERC1155UniswapV3Wrapper} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155UniswapV3Wrapper.sol";
-import {ERC1155UniswapV3ConfigurationProvider} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155UniswapV3ConfigurationProvider.sol";
-import {ERC1155UniswapV3Oracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155UniswapV3Oracle.sol";
+    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/ERC1155UniswapV3Wrapper.sol";
+import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
+import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
 import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {UniswapV3Leverage, UniswapV3LeveragedPosition} from "../src/leverage/UniswapV3Leverage.sol";
+import {YLDRCLLeverage, BaseCLLeveragedPosition} from "../src/leverage/YLDRCLLeverage.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {AaveERC3156Wrapper, IPool as IAavePool} from "../src/flashloan/AaveERC3156Wrapper.sol";
@@ -24,6 +23,8 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IUniswapV3SwapCallback} from "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
 import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import {LiquidationsHelper} from "../src/LiquidationsHelper.sol";
+import {ERC1155CLWrapperConfigurationProvider} from
+    "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperConfigurationProvider.sol";
 
 contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
     using PoolTesting for PoolTesting.Data;
@@ -58,9 +59,9 @@ contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
         uniswapV3Wrapper = ERC1155UniswapV3Wrapper(
             address(
                 new TransparentUpgradeableProxy(
-                    address(new ERC1155UniswapV3Wrapper()),
+                    address(new ERC1155UniswapV3Wrapper(address(uniswapV3Testing.positionManager))),
                     ADMIN,
-                    abi.encodeCall(ERC1155UniswapV3Wrapper.initialize, (uniswapV3Testing.positionManager))
+                    abi.encodeCall(ERC1155UniswapV3Wrapper.initialize, ())
                 )
             )
         );
@@ -96,11 +97,11 @@ contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
         poolTesting.addERC1155Reserve(
             address(uniswapV3Wrapper),
             address(
-                new ERC1155UniswapV3ConfigurationProvider(
+                new ERC1155CLWrapperConfigurationProvider(
                     IPool(poolTesting.addressesProvider.getPool()), uniswapV3Wrapper
                 )
             ),
-            address(new ERC1155UniswapV3Oracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
+            address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
             ADMIN,
             0.2e4
         );

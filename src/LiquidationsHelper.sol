@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.23;
 
-import {IERC1155UniswapV3Wrapper} from "@yldr-lending/core/src/interfaces/IERC1155UniswapV3Wrapper.sol";
 import {IPoolAddressesProvider} from "@yldr-lending/core/src/interfaces/IPoolAddressesProvider.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import {ERC721Holder} from "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
@@ -17,7 +16,8 @@ import {UserConfiguration} from "@yldr-lending/core/src/protocol/libraries/confi
 import {IERC1155ConfigurationProvider} from "@yldr-lending/core/src/interfaces/IERC1155ConfigurationProvider.sol";
 import {IERC1155Supply} from "@yldr-lending/core/src/interfaces/IERC1155Supply.sol";
 import {IERC3156FlashLender, IERC3156FlashBorrower} from "@openzeppelin/contracts/interfaces/IERC3156FlashLender.sol";
-import {IERC1155UniswapV3Wrapper} from "@yldr-lending/core/src/interfaces/IERC1155UniswapV3Wrapper.sol";
+import {BaseERC1155CLWrapper} from
+    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/BaseERC1155CLWrapper.sol";
 import {IAssetConverter} from "src/interfaces/IAssetConverter.sol";
 
 /// @author YLDR <admin@apyflow.com>
@@ -246,20 +246,20 @@ contract LiquidationsHelper is IERC3156FlashBorrower, ERC1155Holder, ERC721Holde
                 false
             );
 
-            (uint256 amount0, uint256 amount1) = IERC1155UniswapV3Wrapper(params.collateral.collateralAsset).burn(
+            (uint256 amount0, uint256 amount1) = BaseERC1155CLWrapper(params.collateral.collateralAsset).burn(
                 address(this),
                 params.collateral.collateralTokenId,
-                IERC1155UniswapV3Wrapper(params.collateral.collateralAsset).balanceOf(
+                BaseERC1155CLWrapper(params.collateral.collateralAsset).balanceOf(
                     address(this), params.collateral.collateralTokenId
                 ),
                 address(this)
             );
 
-            (,, address token0, address token1,,,,,,,,) = IERC1155UniswapV3Wrapper(params.collateral.collateralAsset)
-                .positionManager().positions(params.collateral.collateralTokenId);
+            BaseERC1155CLWrapper.PositionData memory position = BaseERC1155CLWrapper(params.collateral.collateralAsset)
+                .getPositionData(params.collateral.collateralTokenId);
 
-            _swap(params.assetConverter, token0, params.debt.debtAsset, amount0, 1000);
-            _swap(params.assetConverter, token1, params.debt.debtAsset, amount1, 1000);
+            _swap(params.assetConverter, position.token0, params.debt.debtAsset, amount0, 1000);
+            _swap(params.assetConverter, position.token1, params.debt.debtAsset, amount1, 1000);
         }
 
         IERC20(token).safeTransfer(owner(), IERC20(token).balanceOf(address(this)) - amount - flashFee);

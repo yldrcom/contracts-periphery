@@ -1,2 +1,14 @@
-@yldr-lending/core/=lib/yldr-lending-core/
+@algebra/=lib/yldr-lending-core/lib/algebra/
+@openzeppelin/contracts-upgradeable/=lib/yldr-lending-core/lib/openzeppelin-upgradeable/contracts/
+@openzeppelin/contracts/=lib/yldr-lending-core/lib/openzeppelin/contracts/
+@uniswap/=lib/yldr-lending-core/lib/uniswap/
 @aave-v3/core/=lib/aave-v3-core/
+algebra/=lib/yldr-lending-core/lib/algebra/src/
+ds-test/=lib/yldr-lending-core/lib/forge-std/lib/ds-test/src/
+erc4626-tests/=lib/yldr-lending-core/lib/openzeppelin-upgradeable/lib/erc4626-tests/
+forge-std/=lib/forge-std/src/
+openzeppelin-contracts/=lib/yldr-lending-core/lib/openzeppelin-upgradeable/lib/openzeppelin-contracts/
+openzeppelin-upgradeable/=lib/yldr-lending-core/lib/openzeppelin-upgradeable/
+openzeppelin/=lib/yldr-lending-core/lib/openzeppelin/
+uniswap/=lib/yldr-lending-core/lib/uniswap/
+@yldr-lending/core/=lib/yldr-lending-core/

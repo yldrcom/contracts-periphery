@@ -3,7 +3,7 @@ pragma solidity ^0.8.10;
 
 import {IERC3156FlashLender, IERC3156FlashBorrower} from "@openzeppelin/contracts/interfaces/IERC3156FlashLender.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {PercentageMath} from "@aave-v3/core/contracts/protocol/libraries/math/PercentageMath.sol";
+import {PercentageMath} from "@yldr-lending/core/src/protocol/libraries/math/PercentageMath.sol";
 import {ERC20Mock} from "@yldr-lending/core/src/mocks/ERC20Mock.sol";
 
 contract MockERC3156Wrapper is IERC3156FlashLender {

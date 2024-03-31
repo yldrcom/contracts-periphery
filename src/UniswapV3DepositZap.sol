@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.23;
 
-import {IERC1155UniswapV3Wrapper} from "@yldr-lending/core/src/interfaces/IERC1155UniswapV3Wrapper.sol";
+import {BaseERC1155CLWrapper} from
+    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/BaseERC1155CLWrapper.sol";
 import {IPoolAddressesProvider} from "@yldr-lending/core/src/interfaces/IPoolAddressesProvider.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
 /// @author YLDR <admin@apyflow.com>
 contract UniswapV3DepositZap is IERC721Receiver, IERC1155Receiver {
     error InvalidCaller();
 
-    IERC1155UniswapV3Wrapper public immutable positionWrapper;
-    INonfungiblePositionManager public immutable positionManager;
+    BaseERC1155CLWrapper public immutable positionWrapper;
     IPool public immutable pool;
     address public immutable nToken;
 
-    constructor(IPoolAddressesProvider _addressesProvider, IERC1155UniswapV3Wrapper _positionWrapper) {
+    constructor(IPoolAddressesProvider _addressesProvider, BaseERC1155CLWrapper _positionWrapper) {
         pool = IPool(_addressesProvider.getPool());
         nToken = pool.getERC1155ReserveData(address(_positionWrapper)).nTokenAddress;
         positionWrapper = _positionWrapper;
-        positionManager = _positionWrapper.positionManager();
 
         positionWrapper.setApprovalForAll(address(pool), true);
     }
@@ -32,9 +32,7 @@ contract UniswapV3DepositZap is IERC721Receiver, IERC1155Receiver {
         override
         returns (bytes4)
     {
-        if (msg.sender != address(positionManager)) revert InvalidCaller();
-
-        positionManager.safeTransferFrom(address(this), address(positionWrapper), tokenId);
+        IERC721(msg.sender).safeTransferFrom(address(this), address(positionWrapper), tokenId);
         pool.supplyERC1155({
             asset: address(positionWrapper),
             tokenId: tokenId,

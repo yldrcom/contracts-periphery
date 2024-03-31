@@ -1,7 +1,8 @@
 pragma solidity 0.8.23;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IERC1155UniswapV3Wrapper} from "@yldr-lending/core/src/interfaces/IERC1155UniswapV3Wrapper.sol";
+import {BaseERC1155CLWrapper} from
+    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/BaseERC1155CLWrapper.sol";
 import {INToken} from "@yldr-lending/core/src/interfaces/INToken.sol";
 import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 
@@ -9,10 +10,10 @@ import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Re
 contract YLDRFeeCollector is Ownable, IERC1155Receiver {
     error InvalidCaller();
 
-    IERC1155UniswapV3Wrapper public immutable uniswapV3Wrapper;
+    BaseERC1155CLWrapper public immutable uniswapV3Wrapper;
     address public treasury;
 
-    constructor(IERC1155UniswapV3Wrapper _uniswapV3Wrapper, address _treasury, address _owner) Ownable(_owner) {
+    constructor(BaseERC1155CLWrapper _uniswapV3Wrapper, address _treasury, address _owner) Ownable(_owner) {
         uniswapV3Wrapper = _uniswapV3Wrapper;
         treasury = _treasury;
     }
