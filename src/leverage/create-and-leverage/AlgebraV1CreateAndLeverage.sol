@@ -4,14 +4,14 @@ pragma solidity 0.8.23;
 import {BaseERC1155CLWrapper} from
     "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/BaseERC1155CLWrapper.sol";
 import {YLDRCLLeverage, BaseCLLeveragedPosition} from "../YLDRCLLeverage.sol";
-import {UniswapV3Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/UniswapV3Adapter.sol";
+import {AlgebraV1Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/AlgebraV1Adapter.sol";
 import {BaseCreateAndLeverage} from "./BaseCreateAndLeverage.sol";
 
 /// @author YLDR <admin@apyflow.com>
-contract UniswapV3CreateAndLeverage is BaseCreateAndLeverage, UniswapV3Adapter {
+contract AlgebraV1CreateAndLeverage is BaseCreateAndLeverage, AlgebraV1Adapter {
     constructor(YLDRCLLeverage _leverage)
         BaseCreateAndLeverage(_leverage)
-        UniswapV3Adapter(
+        AlgebraV1Adapter(
             BaseERC1155CLWrapper(BaseCLLeveragedPosition(_leverage.implementation()).positionWrapper()).getPositionManager()
         )
     {}

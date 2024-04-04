@@ -58,4 +58,36 @@ abstract contract BaseCLDataProvider is BaseCLAdapter {
             datas[i] = getPositionData(tokenIds[i]);
         }
     }
+
+    function getPositionPool(uint256 tokenId) public view returns (address) {
+        return _getPool(_getPositionData(tokenId));
+    }
+
+    function getPositionManager() public view returns (address) {
+        return _getPositionManager();
+    }
+
+    function getFeeGrowths(address pool, int24 tick)
+        public
+        view
+        returns (uint256 feeGrowthOutside0X128, uint256 feeGrowthOutside1X128)
+    {
+        return _getFeeGrowths(pool, tick);
+    }
+
+    function getPoolState(address pool) public view returns (uint160 sqrtPriceX96, int24 tick) {
+        return _getPoolState(pool);
+    }
+
+    function getPoolLiquidity(address pool) public view returns (uint128 liquidity) {
+        return _getPoolLiquidity(pool);
+    }
+
+    function getGlobalFeeGrowths(address pool)
+        public
+        view
+        returns (uint256 feeGrowthGlobal0X128, uint256 feeGrowthGlobal1X128)
+    {
+        return _getGlobalFeeGrowths(pool);
+    }
 }

@@ -5,13 +5,15 @@ import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {BaseERC1155CLWrapper} from
     "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/BaseERC1155CLWrapper.sol";
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
-import {IUniswapV3Leverage} from "../interfaces/IUniswapV3Leverage.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {BaseCLLeveragedPosition} from "./position-impls/BaseCLLeveragedPosition.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
-contract YLDRCLLeverage is IUniswapV3Leverage, Ownable, ERC1155Holder {
+contract YLDRCLLeverage is Ownable, ERC1155Holder, IERC721Receiver {
+    event LeveragedPositionCreated(address indexed position, address indexed user);
+
     BaseCLLeveragedPosition private leveragePositionImplementation;
 
     constructor(BaseCLLeveragedPosition _implementation) Ownable(msg.sender) {
@@ -51,7 +53,7 @@ contract YLDRCLLeverage is IUniswapV3Leverage, Ownable, ERC1155Holder {
         return this.onERC721Received.selector;
     }
 
-    function implementation() external view override returns (address) {
+    function implementation() external view returns (address) {
         return address(leveragePositionImplementation);
     }
 
