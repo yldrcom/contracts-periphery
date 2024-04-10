@@ -16,7 +16,7 @@ contract YLDRCLLeverage is Ownable, ERC1155Holder, IERC721Receiver {
 
     BaseCLLeveragedPosition private leveragePositionImplementation;
 
-    constructor(BaseCLLeveragedPosition _implementation) Ownable(msg.sender) {
+    constructor(BaseCLLeveragedPosition _implementation, address _owner) Ownable(_owner) {
         leveragePositionImplementation = _implementation;
     }
 

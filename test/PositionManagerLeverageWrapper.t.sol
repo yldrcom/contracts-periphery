@@ -136,7 +136,7 @@ contract UniswapV3CreateAndLeverageTest is BaseTest {
 
         UniswapV3LeveragedPosition implementation =
             new UniswapV3LeveragedPosition(poolTesting.addressesProvider, uniswapV3Wrapper, 1000, address(this));
-        uniswapV3Leverage = new YLDRCLLeverage(implementation);
+        uniswapV3Leverage = new YLDRCLLeverage(implementation, ADMIN);
 
         leverageWrapper = new UniswapV3CreateAndLeverage(uniswapV3Leverage);
 

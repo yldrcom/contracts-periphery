@@ -15,12 +15,12 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
-import {UniswapV3DepositZap} from "../src/UniswapV3DepositZap.sol";
+import {CLDepositZap} from "../src/CLDepositZap.sol";
 import {INToken} from "@yldr-lending/core/src/interfaces/INToken.sol";
 import {ERC1155CLWrapperConfigurationProvider} from
     "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperConfigurationProvider.sol";
 
-contract UniswapV3DepositZapTest is BaseTest {
+contract CLDepositZapTest is BaseTest {
     using PoolTesting for PoolTesting.Data;
     using UniswapV3Testing for UniswapV3Testing.Data;
     using SafeERC20 for IERC20Metadata;
@@ -34,7 +34,7 @@ contract UniswapV3DepositZapTest is BaseTest {
     ERC1155UniswapV3Wrapper uniswapV3Wrapper;
     YLDRCLLeverage uniswapV3Leverage;
 
-    UniswapV3DepositZap zap;
+    CLDepositZap zap;
 
     constructor() {
         vm.createSelectFork("mainnet");
@@ -95,7 +95,7 @@ contract UniswapV3DepositZapTest is BaseTest {
             0.2e4
         );
 
-        zap = new UniswapV3DepositZap(poolTesting.addressesProvider, uniswapV3Wrapper);
+        zap = new CLDepositZap(poolTesting.addressesProvider, uniswapV3Wrapper);
 
         vm.startPrank(ALICE);
     }

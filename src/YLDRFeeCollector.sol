@@ -3,18 +3,15 @@ pragma solidity 0.8.23;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {BaseERC1155CLWrapper} from
     "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/BaseERC1155CLWrapper.sol";
-import {INToken} from "@yldr-lending/core/src/interfaces/INToken.sol";
 import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 
 /// @author YLDR <admin@apyflow.com>
 contract YLDRFeeCollector is Ownable, IERC1155Receiver {
     error InvalidCaller();
 
-    BaseERC1155CLWrapper public immutable uniswapV3Wrapper;
     address public treasury;
 
-    constructor(BaseERC1155CLWrapper _uniswapV3Wrapper, address _treasury, address _owner) Ownable(_owner) {
-        uniswapV3Wrapper = _uniswapV3Wrapper;
+    constructor(address _treasury, address _owner) Ownable(_owner) {
         treasury = _treasury;
     }
 
@@ -23,9 +20,7 @@ contract YLDRFeeCollector is Ownable, IERC1155Receiver {
     }
 
     function onERC1155Received(address, address, uint256 id, uint256 value, bytes calldata) external returns (bytes4) {
-        if (msg.sender != address(uniswapV3Wrapper)) revert InvalidCaller();
-
-        uniswapV3Wrapper.burn(address(this), id, value, treasury);
+        BaseERC1155CLWrapper(msg.sender).burn(address(this), id, value, treasury);
 
         return this.onERC1155Received.selector;
     }
@@ -34,10 +29,8 @@ contract YLDRFeeCollector is Ownable, IERC1155Receiver {
         external
         returns (bytes4)
     {
-        if (msg.sender != address(uniswapV3Wrapper)) revert InvalidCaller();
-
         for (uint256 i = 0; i < ids.length; i++) {
-            uniswapV3Wrapper.burn(address(this), ids[i], values[i], treasury);
+            BaseERC1155CLWrapper(msg.sender).burn(address(this), ids[i], values[i], treasury);
         }
 
         return this.onERC1155BatchReceived.selector;
