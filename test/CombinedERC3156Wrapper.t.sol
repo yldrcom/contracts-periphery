@@ -21,14 +21,12 @@ contract CombinedERC3156WrapperTest is BaseTest, IERC3156FlashBorrower {
     function testFuzz_fees(
         uint256 feeMain,
         uint256 feeFallback,
-        uint256 minFee,
         uint256 maxMain,
         uint256 maxFallback,
         uint256 amountForTest
     ) public {
         feeMain = _bound(feeMain, 0, 10000);
         feeFallback = _bound(feeFallback, 0, 10000);
-        minFee = _bound(minFee, 0, 10000);
 
         maxMain = _bound(maxMain, 0, 1_000_000_000 * 1e18);
         maxFallback = _bound(maxFallback, 0, 1_000_000_000 * 1e18);
@@ -40,14 +38,14 @@ contract CombinedERC3156WrapperTest is BaseTest, IERC3156FlashBorrower {
         asset.mint(address(main), maxMain);
         asset.mint(address(fallback_), maxFallback);
 
-        CombinedERC3156Wrapper wrapper = new CombinedERC3156Wrapper(main, fallback_, minFee, BOB);
+        CombinedERC3156Wrapper wrapper = new CombinedERC3156Wrapper(main, fallback_, BOB);
 
         uint256 feeMainExpected =
             (amountForTest > maxMain) ? maxMain.percentMul(feeMain) : amountForTest.percentMul(feeMain);
         uint256 feeFallbackExpected = (amountForTest > maxMain) ? (amountForTest - maxMain).percentMul(feeFallback) : 0;
 
         uint256 realFee = feeMainExpected + feeFallbackExpected;
-        uint256 minFeeAmount = amountForTest.percentMul(minFee);
+        uint256 minFeeAmount = amountForTest.percentMul(feeMain);
 
         uint256 feeToTreasuryExpected = (realFee < minFeeAmount) ? (minFeeAmount - realFee) : 0;
 

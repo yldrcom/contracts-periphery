@@ -6,11 +6,8 @@ import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
 import {console2} from "forge-std/console2.sol";
 import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import {ERC1155AlgebraV1Wrapper} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/ERC1155AlgebraV1Wrapper.sol";
 import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
 import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {YLDRCLLeverage, BaseCLLeveragedPosition} from "../src/leverage/YLDRCLLeverage.sol";
 import {IERC20Metadata, IERC20} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {AaveERC3156Wrapper, IPool as IAavePool} from "../src/flashloan/AaveERC3156Wrapper.sol";
@@ -26,14 +23,16 @@ import {IUniswapV3SwapCallback} from "@uniswap/v3-core/contracts/interfaces/call
 import {IAlgebraPool} from "@algebra/src/interfaces/IAlgebraPool.sol";
 import {YLDRFeeCollector} from "../src/YLDRFeeCollector.sol";
 import {PercentageMath} from "@yldr-lending/core/src/protocol/libraries/math/PercentageMath.sol";
-import {AlgebraV1DataProvider} from "../src/ui/AlgebraV1DataProvider.sol";
-import {BaseCLLeveragedPosition} from "../src/leverage/position-impls/BaseCLLeveragedPosition.sol";
 import {ERC1155CLWrapperConfigurationProvider} from
     "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperConfigurationProvider.sol";
-import {AlgebraV1LeveragedPosition} from "../src/leverage/position-impls/AlgebraV1LeveragedPosition.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {AlgebraV1TestingUtils} from "./utils/AlgebraV1TestingUtils.sol";
-import {BaseCLDataProvider} from "../src/ui/BaseCLDataProvider.sol";
+import {CLDataProvider} from "../src/ui/CLDataProvider.sol";
+import {ERC1155CLWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapper.sol";
+import {YLDRCLLeverage} from "../src/leverage/YLDRCLLeverage.sol";
+import {CLLeveragedPosition} from "../src/leverage/CLLeveragedPosition.sol";
+import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/BaseCLAdapter.sol";
+import {AlgebraV1Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/AlgebraV1Adapter.sol";
 
 contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
     using PoolTesting for PoolTesting.Data;
@@ -49,9 +48,10 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
     UniswapV3Testing.Data uniswapV3Testing;
 
     AlgebraV1TestingUtils algebraTesting;
-    ERC1155AlgebraV1Wrapper algebraWrapper;
+    AlgebraV1Adapter algebraAdapter;
+    ERC1155CLWrapper algebraWrapper;
     YLDRCLLeverage algebraLeverage;
-    AlgebraV1DataProvider algebraDataProvider;
+    CLDataProvider algebraDataProvider;
 
     AssetConverter assetConverter;
     UniswapV3Converter uniswapV3Converter;
@@ -75,14 +75,16 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
         algebraTesting = new AlgebraV1TestingUtils(camelotPositionManager);
 
         uniswapV3Testing.init(INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88));
-        algebraDataProvider = new AlgebraV1DataProvider(camelotPositionManager);
 
-        algebraWrapper = ERC1155AlgebraV1Wrapper(
+        algebraAdapter = new AlgebraV1Adapter(camelotPositionManager);
+        algebraDataProvider = new CLDataProvider(algebraAdapter);
+
+        algebraWrapper = ERC1155CLWrapper(
             address(
                 new TransparentUpgradeableProxy(
-                    address(new ERC1155AlgebraV1Wrapper(camelotPositionManager)),
+                    address(new ERC1155CLWrapper(algebraAdapter)),
                     ADMIN,
-                    abi.encodeCall(ERC1155AlgebraV1Wrapper.initialize, ())
+                    abi.encodeCall(ERC1155CLWrapper.initialize, ())
                 )
             )
         );
@@ -119,11 +121,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         poolTesting.addERC1155Reserve(
             address(algebraWrapper),
-            address(
-                new ERC1155CLWrapperConfigurationProvider(
-                    IPool(poolTesting.addressesProvider.getPool()), algebraWrapper
-                )
-            ),
+            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, algebraWrapper)),
             address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, algebraWrapper)),
             address(feeCollector),
             0.2e4
@@ -155,10 +153,10 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         aaveFlashloan = new AaveERC3156Wrapper(IAavePool(0x794a61358D6845594F94dc1DB02A252b5b4814aD));
         yldrFlashloan = new YLDRERC3156Wrapper(IPool(poolTesting.addressesProvider.getPool()));
-        combinedFlashloan = new CombinedERC3156Wrapper(yldrFlashloan, aaveFlashloan, 0, address(this));
+        combinedFlashloan = new CombinedERC3156Wrapper(yldrFlashloan, aaveFlashloan, address(this));
 
-        AlgebraV1LeveragedPosition implementation =
-            new AlgebraV1LeveragedPosition(poolTesting.addressesProvider, algebraWrapper, 1000, address(this));
+        CLLeveragedPosition implementation =
+            new CLLeveragedPosition(poolTesting.addressesProvider, algebraWrapper, 1000, address(this), address(0));
         algebraLeverage = new YLDRCLLeverage(implementation, ADMIN);
 
         // Supply so the pool has funds for leverage operations
@@ -180,22 +178,21 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
         uint256 amount0;
         uint256 amount1;
         uint128 liquidityBeforeLeverage;
-        BaseCLLeveragedPosition position;
+        CLLeveragedPosition position;
     }
 
     function _aquireLeveragedPosition(uint256 amount0Desired, uint256 amount1Desired, uint256 amountToBorrow)
         internal
         returns (LeveragePositionData memory data)
     {
-        (data.tokenId, , data.amount0, data.amount1) = algebraTesting.mintPosition(
-            address(weth), address(usdc), amount0Desired, amount1Desired, ALICE
-        );
+        (data.tokenId,, data.amount0, data.amount1) =
+            algebraTesting.mintPosition(address(weth), address(usdc), amount0Desired, amount1Desired, ALICE);
 
         data.liquidityBeforeLeverage = algebraDataProvider.getPositionData(data.tokenId).liquidity;
 
         uint64 nonce = vm.getNonce(address(algebraLeverage));
 
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: data.tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: amountToBorrow,
@@ -219,7 +216,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
             "Too much leftovers"
         );
 
-        data.position = BaseCLLeveragedPosition(vm.computeCreateAddress(address(algebraLeverage), nonce));
+        data.position = CLLeveragedPosition(vm.computeCreateAddress(address(algebraLeverage), nonce));
 
         assertEq(usdc.balanceOf(address(data.position)), 0, "position has USDC after creation");
         assertEq(weth.balanceOf(address(data.position)), 0, "position has WETH after creation");
@@ -237,7 +234,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
             0, IERC20(pool.getReserveData(address(usdc)).variableDebtTokenAddress).balanceOf(address(pos.position))
         );
 
-        AlgebraV1DataProvider.CLPositionData memory positionData = algebraDataProvider.getPositionData(pos.tokenId);
+        CLDataProvider.CLPositionData memory positionData = algebraDataProvider.getPositionData(pos.tokenId);
 
         uint256 balance = IERC1155(pool.getERC1155ReserveData(address(algebraWrapper)).nTokenAddress).balanceOf(
             address(pos.position), pos.tokenId
@@ -254,7 +251,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         pos.position.deleverage(
             flashloan,
-            BaseCLLeveragedPosition.DeleverageParams({
+            CLLeveragedPosition.DeleverageParams({
                 assetConverter: assetConverter,
                 receiver: recipient,
                 maxSwapSlippage: 50,
@@ -386,7 +383,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         uint128 liquidityBefore = algebraDataProvider.getPositionData(tokenId).liquidity;
 
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: 1000e6,
@@ -398,10 +395,9 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         IERC721(camelotPositionManager).safeTransferFrom(ALICE, address(algebraLeverage), tokenId, abi.encode(params));
 
-        BaseCLLeveragedPosition position =
-            BaseCLLeveragedPosition(vm.computeCreateAddress(address(algebraLeverage), 1));
-
-        (uint160 currentSqrtPrice,) = algebraDataProvider.getPoolState(position.liquidityPool());
+        CLLeveragedPosition position = CLLeveragedPosition(vm.computeCreateAddress(address(algebraLeverage), 1));
+        BaseCLAdapter.PositionData memory positionData = algebraAdapter.getPositionData(tokenId);
+        (uint160 currentSqrtPrice,) = algebraAdapter.getPoolState(algebraAdapter.getPool(positionData));
         vm.stopPrank();
         // Do some movements to increase fees
         algebraTesting.movePoolPrice(tokenId, currentSqrtPrice * 101 / 100);
@@ -409,7 +405,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
         vm.startPrank(ALICE);
 
         position.compound(
-            aaveFlashloan, BaseCLLeveragedPosition.CompoundParams({assetConverter: assetConverter, maxSwapSlippage: 50})
+            aaveFlashloan, CLLeveragedPosition.CompoundParams({assetConverter: assetConverter, maxSwapSlippage: 50})
         );
 
         uint128 liquidityAfter = algebraDataProvider.getPositionData(tokenId).liquidity;
@@ -419,7 +415,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
     function test_deleverage_fees() public {
         (uint256 tokenId,,,) = algebraTesting.mintPosition(address(weth), address(usdc), 1e18, 2000e6, ALICE);
 
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: 1000e6,
@@ -431,23 +427,23 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         IERC721(camelotPositionManager).safeTransferFrom(ALICE, address(algebraLeverage), tokenId, abi.encode(params));
 
-        BaseCLLeveragedPosition position =
-            BaseCLLeveragedPosition(vm.computeCreateAddress(address(algebraLeverage), 1));
+        CLLeveragedPosition position = CLLeveragedPosition(vm.computeCreateAddress(address(algebraLeverage), 1));
 
-        (uint160 currentSqrtPrice,) = algebraDataProvider.getPoolState(position.liquidityPool());
+        BaseCLAdapter.PositionData memory positionData = algebraAdapter.getPositionData(tokenId);
+        (uint160 currentSqrtPrice,) = algebraAdapter.getPoolState(algebraAdapter.getPool(positionData));
         vm.stopPrank();
         // Do some movements to increase fees
         algebraTesting.movePoolPrice(tokenId, currentSqrtPrice * 101 / 100);
         algebraTesting.movePoolPrice(tokenId, currentSqrtPrice);
 
         (uint256 lastFees0, uint256 lastFees1) = (position.lastFees0(), position.lastFees1());
-        (uint256 fees0Before, uint256 fees1Before) = algebraWrapper.getPendingFees(tokenId);
+        (uint256 fees0Before, uint256 fees1Before) = algebraAdapter.getPendingFees(positionData);
         uint256 revenueFee = position.revenueFee();
 
         vm.startPrank(ALICE);
         position.deleverage(
             aaveFlashloan,
-            BaseCLLeveragedPosition.DeleverageParams({
+            CLLeveragedPosition.DeleverageParams({
                 assetConverter: assetConverter,
                 receiver: ALICE,
                 maxSwapSlippage: 50,
@@ -455,7 +451,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
             })
         );
 
-        BaseCLDataProvider.CLPositionData memory pos = algebraDataProvider.getPositionData(tokenId);
+        CLDataProvider.CLPositionData memory pos = algebraDataProvider.getPositionData(tokenId);
 
         assertEq(pos.fee0, fees0Before - Math.mulDiv(fees0Before - lastFees0, revenueFee, 1e4));
         assertEq(pos.fee1, fees1Before - Math.mulDiv(fees1Before - lastFees1, revenueFee, 1e4));
@@ -484,11 +480,10 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         vars.debtAmount = 10000e6;
 
-        (vars.tokenId, , vars.amount0, vars.amount1) = algebraTesting.mintPosition(
-            address(weth), address(usdc), 20e18, 20000e6, ALICE
-        );
+        (vars.tokenId,, vars.amount0, vars.amount1) =
+            algebraTesting.mintPosition(address(weth), address(usdc), 20e18, 20000e6, ALICE);
 
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: vars.tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: vars.debtAmount,
@@ -507,23 +502,23 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
             ALICE, address(algebraLeverage), vars.tokenId, abi.encode(params)
         );
 
-        BaseCLLeveragedPosition position =
-            BaseCLLeveragedPosition(vm.computeCreateAddress(address(algebraLeverage), nonce));
+        CLLeveragedPosition position = CLLeveragedPosition(vm.computeCreateAddress(address(algebraLeverage), nonce));
 
         vars.revenueFee = 1000 * vars.debtValue / (vars.debtValue + vars.positionValue);
         assertApproxEqRel(position.revenueFee(), vars.revenueFee, 10 ** 16); // 1% delta allowed
         // Update so we have the actual value
         vars.revenueFee = position.revenueFee();
 
-        (vars.currentSqrtPrice,) = algebraDataProvider.getPoolState(position.liquidityPool());
+        BaseCLAdapter.PositionData memory positionData = algebraAdapter.getPositionData(vars.tokenId);
+        (vars.currentSqrtPrice,) = algebraAdapter.getPoolState(algebraAdapter.getPool(positionData));
         vm.stopPrank();
         {
-            (vars.fees0Before, vars.fees1Before) = algebraWrapper.getPendingFees(vars.tokenId);
+            (vars.fees0Before, vars.fees1Before) = _getPendingFees(vars.tokenId);
             // Do some movements to increase fees
             algebraTesting.movePoolPrice(vars.tokenId, vars.currentSqrtPrice * 101 / 100);
             algebraTesting.movePoolPrice(vars.tokenId, vars.currentSqrtPrice);
 
-            (vars.fees0After, vars.fees1After) = algebraWrapper.getPendingFees(vars.tokenId);
+            (vars.fees0After, vars.fees1After) = _getPendingFees(vars.tokenId);
             (uint256 fees0ToTreasury, uint256 fees1ToTreasury) = (
                 (vars.fees0After - vars.fees0Before) * vars.revenueFee / 1e4,
                 (vars.fees1After - vars.fees1Before) * vars.revenueFee / 1e4
@@ -533,16 +528,15 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
             vm.expectCall(address(usdc), abi.encodeCall(IERC20.transfer, (address(this), fees1ToTreasury)));
             vm.prank(ALICE);
             position.compound(
-                aaveFlashloan,
-                BaseCLLeveragedPosition.CompoundParams({assetConverter: assetConverter, maxSwapSlippage: 50})
+                aaveFlashloan, CLLeveragedPosition.CompoundParams({assetConverter: assetConverter, maxSwapSlippage: 50})
             );
         }
         {
-            (vars.fees0Before, vars.fees1Before) = algebraWrapper.getPendingFees(vars.tokenId);
+            (vars.fees0Before, vars.fees1Before) = _getPendingFees(vars.tokenId);
             // Do some movements to increase fees
             algebraTesting.movePoolPrice(vars.tokenId, vars.currentSqrtPrice * 101 / 100);
             algebraTesting.movePoolPrice(vars.tokenId, vars.currentSqrtPrice);
-            (vars.fees0After, vars.fees1After) = algebraWrapper.getPendingFees(vars.tokenId);
+            (vars.fees0After, vars.fees1After) = _getPendingFees(vars.tokenId);
             (uint256 fees0ToTreasury, uint256 fees1ToTreasury) = (
                 (vars.fees0After - vars.fees0Before) * vars.revenueFee / 1e4,
                 (vars.fees1After - vars.fees1Before) * vars.revenueFee / 1e4
@@ -553,7 +547,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
             vm.prank(ALICE);
             position.deleverage(
                 aaveFlashloan,
-                BaseCLLeveragedPosition.DeleverageParams({
+                CLLeveragedPosition.DeleverageParams({
                     assetConverter: assetConverter,
                     receiver: ALICE,
                     maxSwapSlippage: 50,
@@ -581,7 +575,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
         algebraTesting.movePoolPrice(tokenId, currentSqrtPrice * 10027 / 1e4);
 
         vm.prank(ALICE);
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: 1000e6,
@@ -590,7 +584,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
             owner: ALICE,
             maxSwapSlippage: 50
         });
-        vm.expectRevert(BaseCLLeveragedPosition.TooBigPoolPriceDeviation.selector);
+        vm.expectRevert(CLLeveragedPosition.TooBigPoolPriceDeviation.selector);
         IERC721(camelotPositionManager).safeTransferFrom(ALICE, address(algebraLeverage), tokenId, abi.encode(params));
 
         algebraTesting.movePoolPrice(tokenId, currentSqrtPrice * 10023 / 1e4);
@@ -649,13 +643,13 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
     function test_rebalance() public {
         LeveragePositionData memory pos = _aquireLeveragedPosition(1e18, 2000e6, 1000e6);
-        AlgebraV1DataProvider.CLPositionData memory posData = algebraDataProvider.getPositionData(pos.tokenId);
+        CLDataProvider.CLPositionData memory posData = algebraDataProvider.getPositionData(pos.tokenId);
 
         uint256 positionValueBefore = _calculatePositionNetWorth(pos.position);
 
         pos.position.rebalance(
             aaveFlashloan,
-            BaseCLLeveragedPosition.RebalanceParams({
+            CLLeveragedPosition.RebalanceParams({
                 assetConverter: assetConverter,
                 maxSwapSlippage: 50,
                 newTickLower: posData.tickUpper,
@@ -665,7 +659,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         assertNotEq(pos.position.positionTokenId(), pos.tokenId);
 
-        BaseCLDataProvider.CLPositionData memory newPosData =
+        CLDataProvider.CLPositionData memory newPosData =
             algebraDataProvider.getPositionData(pos.position.positionTokenId());
 
         assertEq(newPosData.tickLower, posData.tickUpper);
@@ -676,7 +670,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
         assertApproxEqRel(positionValueAfter, positionValueBefore, 0.01e18);
     }
 
-    function _calculatePositionNetWorth(BaseCLLeveragedPosition position) internal view returns (uint256) {
+    function _calculatePositionNetWorth(CLLeveragedPosition position) internal view returns (uint256) {
         IYLDROracle oracle = IYLDROracle(poolTesting.addressesProvider.getPriceOracle());
         IPool pool = IPool(poolTesting.addressesProvider.getPool());
 
@@ -687,7 +681,7 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
         );
         uint256 wrappedTotalSupply = algebraWrapper.totalSupply(tokenId);
 
-        AlgebraV1DataProvider.CLPositionData memory positionData = algebraDataProvider.getPositionData(tokenId);
+        CLDataProvider.CLPositionData memory positionData = algebraDataProvider.getPositionData(tokenId);
 
         uint256 positionValue = balance
             * _getUsdValue(positionData.amount0 + positionData.fee0, positionData.amount1 + positionData.fee1)
@@ -701,5 +695,10 @@ contract AlgebraV1LeverageTest is BaseTest, IUniswapV3SwapCallback {
         uint256 debtValue = borrowedPrice * debtAmount / (10 ** IERC20Metadata(borrowedToken).decimals());
 
         return positionValue - debtValue;
+    }
+
+    function _getPendingFees(uint256 tokenId) internal view returns (uint256, uint256) {
+        BaseCLAdapter.PositionData memory positionData = algebraAdapter.getPositionData(tokenId);
+        return algebraAdapter.getPendingFees(positionData);
     }
 }

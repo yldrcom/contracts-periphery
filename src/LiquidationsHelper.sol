@@ -16,9 +16,9 @@ import {UserConfiguration} from "@yldr-lending/core/src/protocol/libraries/confi
 import {IERC1155ConfigurationProvider} from "@yldr-lending/core/src/interfaces/IERC1155ConfigurationProvider.sol";
 import {IERC1155Supply} from "@yldr-lending/core/src/interfaces/IERC1155Supply.sol";
 import {IERC3156FlashLender, IERC3156FlashBorrower} from "@openzeppelin/contracts/interfaces/IERC3156FlashLender.sol";
-import {BaseERC1155CLWrapper} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/BaseERC1155CLWrapper.sol";
+import {ERC1155CLWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapper.sol";
 import {IAssetConverter} from "src/interfaces/IAssetConverter.sol";
+import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/BaseCLAdapter.sol";
 
 /// @author YLDR <admin@apyflow.com>
 contract LiquidationsHelper is IERC3156FlashBorrower, ERC1155Holder, ERC721Holder, Ownable {
@@ -29,6 +29,8 @@ contract LiquidationsHelper is IERC3156FlashBorrower, ERC1155Holder, ERC721Holde
     /// @dev Temproary variable used only to store flash loan provider address during flashloans
     /// Different providers may be used for deposits and withdrawals
     IERC3156FlashLender private flashLoanProvider;
+
+    address public immutable treasury;
 
     struct UserCollateralInfo {
         bool erc1155;
@@ -50,8 +52,9 @@ contract LiquidationsHelper is IERC3156FlashBorrower, ERC1155Holder, ERC721Holde
         IAssetConverter assetConverter;
     }
 
-    constructor(IPoolAddressesProvider _addressesProvider) Ownable(msg.sender) {
+    constructor(IPoolAddressesProvider _addressesProvider, address _treasury) Ownable(msg.sender) {
         addressesProvider = _addressesProvider;
+        treasury = _treasury;
     }
 
     function isLiquidatable(address user) public view returns (bool) {
@@ -246,23 +249,23 @@ contract LiquidationsHelper is IERC3156FlashBorrower, ERC1155Holder, ERC721Holde
                 false
             );
 
-            (uint256 amount0, uint256 amount1) = BaseERC1155CLWrapper(params.collateral.collateralAsset).burn(
+            (uint256 amount0, uint256 amount1) = ERC1155CLWrapper(params.collateral.collateralAsset).burn(
                 address(this),
                 params.collateral.collateralTokenId,
-                BaseERC1155CLWrapper(params.collateral.collateralAsset).balanceOf(
+                ERC1155CLWrapper(params.collateral.collateralAsset).balanceOf(
                     address(this), params.collateral.collateralTokenId
                 ),
                 address(this)
             );
 
-            BaseERC1155CLWrapper.PositionData memory position = BaseERC1155CLWrapper(params.collateral.collateralAsset)
-                .getPositionData(params.collateral.collateralTokenId);
+            BaseCLAdapter adapter = BaseCLAdapter(ERC1155CLWrapper(params.collateral.collateralAsset).adapter());
+            BaseCLAdapter.PositionData memory position = adapter.getPositionData(params.collateral.collateralTokenId);
 
             _swap(params.assetConverter, position.token0, params.debt.debtAsset, amount0, 1000);
             _swap(params.assetConverter, position.token1, params.debt.debtAsset, amount1, 1000);
         }
 
-        IERC20(token).safeTransfer(owner(), IERC20(token).balanceOf(address(this)) - amount - flashFee);
+        IERC20(token).safeTransfer(treasury, IERC20(token).balanceOf(address(this)) - amount - flashFee);
 
         IERC20(token).forceApprove(msg.sender, amount + flashFee);
 

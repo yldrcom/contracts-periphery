@@ -14,7 +14,6 @@ contract CombinedERC3156Wrapper is IERC3156FlashLender, IERC3156FlashBorrower {
 
     IERC3156FlashLender public immutable mainLender;
     IERC3156FlashLender public immutable fallbackLender;
-    uint256 public immutable feePercent;
     address public immutable feeTreasury;
 
     /// @notice Common data for flashloan chain
@@ -42,15 +41,9 @@ contract CombinedERC3156Wrapper is IERC3156FlashLender, IERC3156FlashBorrower {
         uint256 mainFee;
     }
 
-    constructor(
-        IERC3156FlashLender _mainLender,
-        IERC3156FlashLender _fallbackLender,
-        uint256 _feePercent,
-        address _feeTreasury
-    ) {
+    constructor(IERC3156FlashLender _mainLender, IERC3156FlashLender _fallbackLender, address _feeTreasury) {
         mainLender = _mainLender;
         fallbackLender = _fallbackLender;
-        feePercent = _feePercent;
         feeTreasury = _feeTreasury;
     }
 
@@ -62,12 +55,13 @@ contract CombinedERC3156Wrapper is IERC3156FlashLender, IERC3156FlashBorrower {
     /// @inheritdoc IERC3156FlashLender
     function flashFee(address token, uint256 amount) external view override returns (uint256) {
         uint256 maxMain = mainLender.maxFlashLoan(token);
-        uint256 minFee = amount.percentMul(feePercent);
         if (amount <= maxMain) {
-            return Math.max(minFee, mainLender.flashFee(token, amount));
+            return mainLender.flashFee(token, amount);
         } else {
-            return
-                Math.max(minFee, mainLender.flashFee(token, maxMain) + fallbackLender.flashFee(token, amount - maxMain));
+            uint256 feeMain = mainLender.flashFee(token, amount);
+            uint256 feeReal = mainLender.flashFee(token, maxMain) + fallbackLender.flashFee(token, amount - maxMain);
+
+            return Math.max(feeMain, feeReal);
         }
     }
 
@@ -90,7 +84,7 @@ contract CombinedERC3156Wrapper is IERC3156FlashLender, IERC3156FlashBorrower {
     }
 
     function _issueFlashloan(address token, CommonData memory commonData, uint256 totalFee) internal {
-        uint256 minFee = commonData.amount.percentMul(feePercent);
+        uint256 minFee = mainLender.flashFee(token, commonData.amount);
         uint256 feeToTreasury = 0;
         if (totalFee < minFee) {
             feeToTreasury = minFee - totalFee;

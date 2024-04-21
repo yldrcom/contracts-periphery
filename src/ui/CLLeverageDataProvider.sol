@@ -2,22 +2,18 @@
 pragma solidity ^0.8.10;
 
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
-import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import {IUniswapV3Factory} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
 import {LiquidityAmounts} from "@uniswap/v3-periphery/contracts/libraries/LiquidityAmounts.sol";
 import {TickMath} from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
-import {BaseCLDataProvider} from "./BaseCLDataProvider.sol";
-import {UniswapV3LeveragedPosition} from "../leverage/position-impls/UniswapV3LeveragedPosition.sol";
+import {CLDataProvider} from "./CLDataProvider.sol";
 import {IPoolAddressesProvider} from "@yldr-lending/core/src/interfaces/IPoolAddressesProvider.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {YLDRCLLeverage} from "../leverage/YLDRCLLeverage.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {UniswapV3LeveragedPosition} from "../leverage/position-impls/UniswapV3LeveragedPosition.sol";
+import {CLLeveragedPosition} from "../leverage/CLLeveragedPosition.sol";
 
 contract CLLeverageDataProvider {
     struct LeveragedCLPositionData {
-        BaseCLDataProvider.CLPositionData uniswapV3Position;
+        CLDataProvider.CLPositionData uniswapV3Position;
         address debtAsset;
         uint256 debt;
         uint256 revenueFee0;
@@ -25,25 +21,25 @@ contract CLLeverageDataProvider {
         uint256 revenueFeePercent;
     }
 
-    BaseCLDataProvider public immutable dataProvider;
+    CLDataProvider public immutable dataProvider;
     YLDRCLLeverage public immutable leverage;
 
-    constructor(BaseCLDataProvider _dataProvider, YLDRCLLeverage _leverage) {
+    constructor(CLDataProvider _dataProvider, YLDRCLLeverage _leverage) {
         dataProvider = _dataProvider;
         leverage = _leverage;
     }
 
     function getGlobalRevenueFee() public view returns (uint256) {
-        return UniswapV3LeveragedPosition(leverage.implementation()).revenueFeePercent();
+        return CLLeveragedPosition(leverage.implementation()).revenueFeePercent();
     }
 
     function getPositionData(address _position) public view returns (LeveragedCLPositionData memory) {
-        UniswapV3LeveragedPosition position = UniswapV3LeveragedPosition(_position);
+        CLLeveragedPosition position = CLLeveragedPosition(_position);
         IPoolAddressesProvider addressesProvider = position.addressesProvider();
         IPool pool = IPool(addressesProvider.getPool());
 
         uint256 tokenId = position.positionTokenId();
-        BaseCLDataProvider.CLPositionData memory positionData = dataProvider.getPositionData(tokenId);
+        CLDataProvider.CLPositionData memory positionData = dataProvider.getPositionData(tokenId);
         address debtAsset = position.borrowedToken();
         uint256 debt = IERC20(pool.getReserveData(debtAsset).variableDebtTokenAddress).balanceOf(_position);
 

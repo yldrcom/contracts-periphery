@@ -1,11 +1,13 @@
 pragma solidity ^0.8.10;
 
 import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
-import {UniswapV3DataProvider} from "../src/ui/UniswapV3DataProvider.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
+import {CLDataProvider} from "../src/ui/CLDataProvider.sol";
+import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/BaseCLAdapter.sol";
+import {UniswapV3Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/UniswapV3Adapter.sol";
 
-contract UniswapV3DataProviderTest is BaseTest {
-    UniswapV3DataProvider public uniswapV3DataProvider;
+contract CLDataProviderTest is BaseTest {
+    CLDataProvider public uniswapV3DataProvider;
     INonfungiblePositionManager positionManager =
         INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
 
@@ -13,7 +15,8 @@ contract UniswapV3DataProviderTest is BaseTest {
         vm.createSelectFork("mainnet");
         vm.rollFork(18678509);
 
-        uniswapV3DataProvider = new UniswapV3DataProvider(address(positionManager));
+        UniswapV3Adapter adapter = new UniswapV3Adapter(address(positionManager));
+        uniswapV3DataProvider = new CLDataProvider(adapter);
 
         uint256[] memory ids = new uint256[](5);
         ids[0] = 108501;
@@ -29,13 +32,14 @@ contract UniswapV3DataProviderTest is BaseTest {
         vm.createSelectFork("arbitrum_one");
         vm.rollFork(163870012);
 
-        uniswapV3DataProvider = new UniswapV3DataProvider(address(positionManager));
+        UniswapV3Adapter adapter = new UniswapV3Adapter(address(positionManager));
+        uniswapV3DataProvider = new CLDataProvider(adapter);
 
         uniswapV3DataProvider.getPositionData(1021735);
         uniswapV3DataProvider.getPositionData(1021320);
 
         vm.rollFork(164914100);
-        UniswapV3DataProvider.CLPositionData memory data = uniswapV3DataProvider.getPositionData(1028069);
+        CLDataProvider.CLPositionData memory data = uniswapV3DataProvider.getPositionData(1028069);
 
         vm.startPrank(positionManager.ownerOf(1028069));
         (uint256 received0, uint256 received1) = positionManager.collect(

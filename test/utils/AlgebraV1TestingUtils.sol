@@ -6,13 +6,13 @@ import {IAlgebraPool} from "@algebra/src/interfaces/IAlgebraPool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-contract AlgebraV1TestingUtils is BaseCLTestingUtils, AlgebraV1Adapter {
+contract AlgebraV1TestingUtils is BaseCLTestingUtils {
     using SafeERC20 for IERC20;
 
-    constructor(address _positionManager) AlgebraV1Adapter(_positionManager) {}
+    constructor(address _positionManager) BaseCLTestingUtils(new AlgebraV1Adapter(_positionManager)) {}
 
     function _movePoolPrice(address pool, uint160 targetSqrtPriceX96) internal virtual override {
-        (uint160 sqrtPriceX96,) = _getPoolState(pool);
+        (uint160 sqrtPriceX96,) = adapter.getPoolState(pool);
 
         if (sqrtPriceX96 > targetSqrtPriceX96) {
             IAlgebraPool(pool).swap(address(this), true, type(int256).max, targetSqrtPriceX96, "");

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.23;
 
-import {BaseERC1155CLWrapper} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/BaseERC1155CLWrapper.sol";
+import {ERC1155CLWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapper.sol";
 import {IPoolAddressesProvider} from "@yldr-lending/core/src/interfaces/IPoolAddressesProvider.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
@@ -14,13 +13,14 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 contract CLDepositZap is IERC721Receiver, IERC1155Receiver {
     error InvalidCaller();
 
-    BaseERC1155CLWrapper public immutable positionWrapper;
+    ERC1155CLWrapper public immutable positionWrapper;
     IPool public immutable pool;
     address public immutable nToken;
 
-    constructor(IPoolAddressesProvider _addressesProvider, BaseERC1155CLWrapper _positionWrapper) {
+    constructor(IPoolAddressesProvider _addressesProvider, ERC1155CLWrapper _positionWrapper) {
         pool = IPool(_addressesProvider.getPool());
         nToken = pool.getERC1155ReserveData(address(_positionWrapper)).nTokenAddress;
+        require(nToken != address(0), "Reserve is not intiialized");
         positionWrapper = _positionWrapper;
 
         positionWrapper.setApprovalForAll(address(pool), true);

@@ -5,7 +5,13 @@ import {LiquidityAmounts} from "@uniswap/v3-periphery/contracts/libraries/Liquid
 import {TickMath} from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
 import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/BaseCLAdapter.sol";
 
-abstract contract BaseCLDataProvider is BaseCLAdapter {
+contract CLDataProvider {
+    BaseCLAdapter public immutable adapter;
+
+    constructor(BaseCLAdapter _adapter) {
+        adapter = _adapter;
+    }
+
     struct CLPositionData {
         uint256 tokenId;
         address token0;
@@ -23,17 +29,17 @@ abstract contract BaseCLDataProvider is BaseCLAdapter {
     }
 
     function getPositionData(uint256 tokenId) public view returns (CLPositionData memory) {
-        PositionData memory position = _getPositionData(tokenId);
-        address pool = _getPool(position);
+        BaseCLAdapter.PositionData memory position = adapter.getPositionData(tokenId);
+        address pool = adapter.getPool(position);
 
-        (uint160 sqrtPriceX96, int24 tickCurrent) = _getPoolState(pool);
+        (uint160 sqrtPriceX96, int24 tickCurrent) = adapter.getPoolState(pool);
         (uint256 amount0, uint256 amount1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96,
             TickMath.getSqrtRatioAtTick(position.tickLower),
             TickMath.getSqrtRatioAtTick(position.tickUpper),
             position.liquidity
         );
-        (uint256 fees0, uint256 fees1) = _getPendingFees(position);
+        (uint256 fees0, uint256 fees1) = adapter.getPendingFees(position);
 
         return CLPositionData({
             tokenId: tokenId,
@@ -57,37 +63,5 @@ abstract contract BaseCLDataProvider is BaseCLAdapter {
         for (uint256 i = 0; i < tokenIds.length; i++) {
             datas[i] = getPositionData(tokenIds[i]);
         }
-    }
-
-    function getPositionPool(uint256 tokenId) public view returns (address) {
-        return _getPool(_getPositionData(tokenId));
-    }
-
-    function getPositionManager() public view returns (address) {
-        return _getPositionManager();
-    }
-
-    function getFeeGrowths(address pool, int24 tick)
-        public
-        view
-        returns (uint256 feeGrowthOutside0X128, uint256 feeGrowthOutside1X128)
-    {
-        return _getFeeGrowths(pool, tick);
-    }
-
-    function getPoolState(address pool) public view returns (uint160 sqrtPriceX96, int24 tick) {
-        return _getPoolState(pool);
-    }
-
-    function getPoolLiquidity(address pool) public view returns (uint128 liquidity) {
-        return _getPoolLiquidity(pool);
-    }
-
-    function getGlobalFeeGrowths(address pool)
-        public
-        view
-        returns (uint256 feeGrowthGlobal0X128, uint256 feeGrowthGlobal1X128)
-    {
-        return _getGlobalFeeGrowths(pool);
     }
 }

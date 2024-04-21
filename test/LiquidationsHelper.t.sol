@@ -5,12 +5,10 @@ import {UniswapV3Testing} from "@yldr-lending/core/test/libraries/UniswapV3Testi
 import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
 import {console2} from "forge-std/console2.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import {ERC1155UniswapV3Wrapper} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/ERC1155UniswapV3Wrapper.sol";
+import {ERC1155CLWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapper.sol";
 import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
 import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
 import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {YLDRCLLeverage, BaseCLLeveragedPosition} from "../src/leverage/YLDRCLLeverage.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {AaveERC3156Wrapper, IPool as IAavePool} from "../src/flashloan/AaveERC3156Wrapper.sol";
@@ -25,6 +23,8 @@ import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Po
 import {LiquidationsHelper} from "../src/LiquidationsHelper.sol";
 import {ERC1155CLWrapperConfigurationProvider} from
     "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperConfigurationProvider.sol";
+import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/BaseCLAdapter.sol";
+import {UniswapV3Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/UniswapV3Adapter.sol";
 
 contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
     using PoolTesting for PoolTesting.Data;
@@ -38,7 +38,8 @@ contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
     PoolTesting.Data poolTesting;
     UniswapV3Testing.Data uniswapV3Testing;
 
-    ERC1155UniswapV3Wrapper uniswapV3Wrapper;
+    BaseCLAdapter uniswapV3Adapter;
+    ERC1155CLWrapper uniswapV3Wrapper;
     LiquidationsHelper helper;
 
     AssetConverter assetConverter;
@@ -55,13 +56,13 @@ contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
         _addAndDealToken(usdt);
 
         uniswapV3Testing.init(INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88));
-
-        uniswapV3Wrapper = ERC1155UniswapV3Wrapper(
+        uniswapV3Adapter = new UniswapV3Adapter(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
+        uniswapV3Wrapper = ERC1155CLWrapper(
             address(
                 new TransparentUpgradeableProxy(
-                    address(new ERC1155UniswapV3Wrapper(address(uniswapV3Testing.positionManager))),
+                    address(new ERC1155CLWrapper(uniswapV3Adapter)),
                     ADMIN,
-                    abi.encodeCall(ERC1155UniswapV3Wrapper.initialize, ())
+                    abi.encodeCall(ERC1155CLWrapper.initialize, ())
                 )
             )
         );
@@ -96,11 +97,7 @@ contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
 
         poolTesting.addERC1155Reserve(
             address(uniswapV3Wrapper),
-            address(
-                new ERC1155CLWrapperConfigurationProvider(
-                    IPool(poolTesting.addressesProvider.getPool()), uniswapV3Wrapper
-                )
-            ),
+            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, uniswapV3Wrapper)),
             address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
             ADMIN,
             0.2e4
@@ -126,7 +123,7 @@ contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
 
         aaveFlashloan = new AaveERC3156Wrapper(IAavePool(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2));
 
-        helper = new LiquidationsHelper(poolTesting.addressesProvider);
+        helper = new LiquidationsHelper(poolTesting.addressesProvider, address(this));
 
         vm.startPrank(BOB);
         IPool pool = IPool(poolTesting.addressesProvider.getPool());
@@ -213,7 +210,7 @@ contract LiquidationsHelperTest is BaseTest, IUniswapV3SwapCallback {
         uint256 balanceBefore = usdc.balanceOf(ADMIN);
         helper.liquidate(ALICE, aaveFlashloan, assetConverter, collateral, debt);
 
-        assertGt(usdc.balanceOf(ADMIN), balanceBefore);
+        assertGt(usdc.balanceOf(address(this)), balanceBefore);
     }
 
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata /* data */ ) external {

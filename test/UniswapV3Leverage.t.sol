@@ -6,11 +6,8 @@ import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
 import {console2} from "forge-std/console2.sol";
 import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import {ERC1155UniswapV3Wrapper} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/ERC1155UniswapV3Wrapper.sol";
 import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
 import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {YLDRCLLeverage, BaseCLLeveragedPosition} from "../src/leverage/YLDRCLLeverage.sol";
 import {IERC20Metadata, IERC20} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {AaveERC3156Wrapper, IPool as IAavePool} from "../src/flashloan/AaveERC3156Wrapper.sol";
@@ -26,11 +23,14 @@ import {IUniswapV3SwapCallback} from "@uniswap/v3-core/contracts/interfaces/call
 import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import {YLDRFeeCollector} from "../src/YLDRFeeCollector.sol";
 import {PercentageMath} from "@yldr-lending/core/src/protocol/libraries/math/PercentageMath.sol";
-import {UniswapV3DataProvider} from "../src/ui/UniswapV3DataProvider.sol";
-import {BaseCLLeveragedPosition} from "../src/leverage/position-impls/BaseCLLeveragedPosition.sol";
+import {CLDataProvider} from "../src/ui/CLDataProvider.sol";
 import {ERC1155CLWrapperConfigurationProvider} from
     "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperConfigurationProvider.sol";
-import {UniswapV3LeveragedPosition} from "../src/leverage/position-impls/UniswapV3LeveragedPosition.sol";
+import {ERC1155CLWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapper.sol";
+import {YLDRCLLeverage} from "../src/leverage/YLDRCLLeverage.sol";
+import {CLLeveragedPosition} from "../src/leverage/CLLeveragedPosition.sol";
+import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/BaseCLAdapter.sol";
+import {UniswapV3Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/UniswapV3Adapter.sol";
 
 contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
     using PoolTesting for PoolTesting.Data;
@@ -45,7 +45,8 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
     PoolTesting.Data poolTesting;
     UniswapV3Testing.Data uniswapV3Testing;
 
-    ERC1155UniswapV3Wrapper uniswapV3Wrapper;
+    BaseCLAdapter uniswapV3Adapter;
+    ERC1155CLWrapper uniswapV3Wrapper;
     YLDRCLLeverage uniswapV3Leverage;
 
     AssetConverter assetConverter;
@@ -57,7 +58,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
     YLDRFeeCollector feeCollector;
 
-    UniswapV3DataProvider uniswapV3DataProvider;
+    CLDataProvider uniswapV3DataProvider;
 
     constructor() {
         vm.createSelectFork("mainnet");
@@ -68,14 +69,15 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         _addAndDealToken(usdt);
 
         uniswapV3Testing.init(INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88));
-        uniswapV3DataProvider = new UniswapV3DataProvider(address(uniswapV3Testing.positionManager));
+        uniswapV3Adapter = new UniswapV3Adapter(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
+        uniswapV3DataProvider = new CLDataProvider(uniswapV3Adapter);
 
-        uniswapV3Wrapper = ERC1155UniswapV3Wrapper(
+        uniswapV3Wrapper = ERC1155CLWrapper(
             address(
                 new TransparentUpgradeableProxy(
-                    address(new ERC1155UniswapV3Wrapper(address(uniswapV3Testing.positionManager))),
+                    address(new ERC1155CLWrapper(uniswapV3Adapter)),
                     ADMIN,
-                    abi.encodeCall(ERC1155UniswapV3Wrapper.initialize, ())
+                    abi.encodeCall(ERC1155CLWrapper.initialize, ())
                 )
             )
         );
@@ -112,11 +114,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         poolTesting.addERC1155Reserve(
             address(uniswapV3Wrapper),
-            address(
-                new ERC1155CLWrapperConfigurationProvider(
-                    IPool(poolTesting.addressesProvider.getPool()), uniswapV3Wrapper
-                )
-            ),
+            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, uniswapV3Wrapper)),
             address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
             address(feeCollector),
             0.2e4
@@ -148,10 +146,10 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         aaveFlashloan = new AaveERC3156Wrapper(IAavePool(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2));
         yldrFlashloan = new YLDRERC3156Wrapper(IPool(poolTesting.addressesProvider.getPool()));
-        combinedFlashloan = new CombinedERC3156Wrapper(yldrFlashloan, aaveFlashloan, 0, address(this));
+        combinedFlashloan = new CombinedERC3156Wrapper(yldrFlashloan, aaveFlashloan, address(this));
 
-        UniswapV3LeveragedPosition implementation =
-            new UniswapV3LeveragedPosition(poolTesting.addressesProvider, uniswapV3Wrapper, 1000, address(this));
+        CLLeveragedPosition implementation =
+            new CLLeveragedPosition(poolTesting.addressesProvider, uniswapV3Wrapper, 1000, address(this), address(0));
         uniswapV3Leverage = new YLDRCLLeverage(implementation, ADMIN);
 
         // Supply so the pool has funds for leverage operations
@@ -173,7 +171,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         uint256 amount0;
         uint256 amount1;
         uint128 liquidityBeforeLeverage;
-        BaseCLLeveragedPosition position;
+        CLLeveragedPosition position;
     }
 
     function _aquireLeveragedPosition(uint256 amount0Desired, uint256 amount1Desired, uint256 amountToBorrow)
@@ -188,7 +186,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         uint64 nonce = vm.getNonce(address(uniswapV3Leverage));
 
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: data.tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: amountToBorrow,
@@ -212,7 +210,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             "Too much leftovers"
         );
 
-        data.position = BaseCLLeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), nonce));
+        data.position = CLLeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), nonce));
 
         assertEq(usdc.balanceOf(address(data.position)), 0, "position has USDC after creation");
         assertEq(weth.balanceOf(address(data.position)), 0, "position has WETH after creation");
@@ -230,7 +228,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             IERC20(pool.getReserveData(address(usdc)).variableDebtTokenAddress).balanceOf(address(pos.position)), 0
         );
 
-        UniswapV3DataProvider.CLPositionData memory positionData = uniswapV3DataProvider.getPositionData(pos.tokenId);
+        CLDataProvider.CLPositionData memory positionData = uniswapV3DataProvider.getPositionData(pos.tokenId);
 
         uint256 balance = IERC1155(pool.getERC1155ReserveData(address(uniswapV3Wrapper)).nTokenAddress).balanceOf(
             address(pos.position), pos.tokenId
@@ -247,7 +245,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         pos.position.deleverage(
             flashloan,
-            BaseCLLeveragedPosition.DeleverageParams({
+            CLLeveragedPosition.DeleverageParams({
                 assetConverter: assetConverter,
                 receiver: recipient,
                 maxSwapSlippage: 50,
@@ -383,7 +381,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         (,,,,,,, uint128 liquidityBefore,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
 
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: 1000e6,
@@ -397,10 +395,9 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             ALICE, address(uniswapV3Leverage), tokenId, abi.encode(params)
         );
 
-        BaseCLLeveragedPosition position =
-            BaseCLLeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), 1));
-
-        (uint160 currentSqrtPrice,,,,,,) = IUniswapV3Pool(position.liquidityPool()).slot0();
+        CLLeveragedPosition position = CLLeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), 1));
+        BaseCLAdapter.PositionData memory data = uniswapV3Adapter.getPositionData(tokenId);
+        (uint160 currentSqrtPrice,,,,,,) = IUniswapV3Pool(uniswapV3Adapter.getPool(data)).slot0();
         vm.stopPrank();
         // Do some movements to increase fees
         uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, currentSqrtPrice * 101 / 100);
@@ -408,7 +405,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         vm.startPrank(ALICE);
 
         position.compound(
-            aaveFlashloan, BaseCLLeveragedPosition.CompoundParams({assetConverter: assetConverter, maxSwapSlippage: 50})
+            aaveFlashloan, CLLeveragedPosition.CompoundParams({assetConverter: assetConverter, maxSwapSlippage: 50})
         );
 
         (,,,,,,, uint128 liquidityAfter,,,,) = uniswapV3Testing.positionManager.positions(tokenId);
@@ -420,7 +417,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             address(usdc), address(weth), 2000e6, 1e18, UniswapV3Testing.PositionType.Both
         );
 
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: 1000e6,
@@ -434,23 +431,22 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             ALICE, address(uniswapV3Leverage), tokenId, abi.encode(params)
         );
 
-        BaseCLLeveragedPosition position =
-            BaseCLLeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), 1));
-
-        (uint160 currentSqrtPrice,,,,,,) = IUniswapV3Pool(position.liquidityPool()).slot0();
+        CLLeveragedPosition position = CLLeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), 1));
+        BaseCLAdapter.PositionData memory data = uniswapV3Adapter.getPositionData(tokenId);
+        (uint160 currentSqrtPrice,,,,,,) = IUniswapV3Pool(uniswapV3Adapter.getPool(data)).slot0();
         vm.stopPrank();
         // Do some movements to increase fees
         uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, currentSqrtPrice * 101 / 100);
         uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, currentSqrtPrice);
 
         (uint256 lastFees0, uint256 lastFees1) = (position.lastFees0(), position.lastFees1());
-        (uint256 fees0Before, uint256 fees1Before) = uniswapV3Wrapper.getPendingFees(tokenId);
+        (uint256 fees0Before, uint256 fees1Before) = _getPendingFees(tokenId);
         uint256 revenueFee = position.revenueFee();
 
         vm.startPrank(ALICE);
         position.deleverage(
             aaveFlashloan,
-            BaseCLLeveragedPosition.DeleverageParams({
+            CLLeveragedPosition.DeleverageParams({
                 assetConverter: assetConverter,
                 receiver: ALICE,
                 maxSwapSlippage: 50,
@@ -491,7 +487,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             address(usdc), address(weth), 20000e6, 20e18, UniswapV3Testing.PositionType.Both
         );
 
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: vars.tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: vars.debtAmount,
@@ -510,23 +506,22 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             ALICE, address(uniswapV3Leverage), vars.tokenId, abi.encode(params)
         );
 
-        BaseCLLeveragedPosition position =
-            BaseCLLeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), nonce));
+        CLLeveragedPosition position = CLLeveragedPosition(vm.computeCreateAddress(address(uniswapV3Leverage), nonce));
 
         vars.revenueFee = 1000 * vars.debtValue / (vars.debtValue + vars.positionValue);
         assertApproxEqRel(position.revenueFee(), vars.revenueFee, 10 ** 16); // 1% delta allowed
         // Update so we have the actual value
         vars.revenueFee = position.revenueFee();
-
-        (vars.currentSqrtPrice,,,,,,) = IUniswapV3Pool(position.liquidityPool()).slot0();
+        BaseCLAdapter.PositionData memory data = uniswapV3Adapter.getPositionData(vars.tokenId);
+        (vars.currentSqrtPrice,,,,,,) = IUniswapV3Pool(uniswapV3Adapter.getPool(data)).slot0();
         vm.stopPrank();
         {
-            (vars.fees0Before, vars.fees1Before) = uniswapV3Wrapper.getPendingFees(vars.tokenId);
+            (vars.fees0Before, vars.fees1Before) = _getPendingFees(vars.tokenId);
             // Do some movements to increase fees
             uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, vars.currentSqrtPrice * 101 / 100);
             uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, vars.currentSqrtPrice);
 
-            (vars.fees0After, vars.fees1After) = uniswapV3Wrapper.getPendingFees(vars.tokenId);
+            (vars.fees0After, vars.fees1After) = _getPendingFees(vars.tokenId);
             (uint256 fees0ToTreasury, uint256 fees1ToTreasury) = (
                 (vars.fees0After - vars.fees0Before) * vars.revenueFee / 1e4,
                 (vars.fees1After - vars.fees1Before) * vars.revenueFee / 1e4
@@ -536,16 +531,15 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             vm.expectCall(address(weth), abi.encodeCall(IERC20.transfer, (address(this), fees1ToTreasury)));
             vm.prank(ALICE);
             position.compound(
-                aaveFlashloan,
-                BaseCLLeveragedPosition.CompoundParams({assetConverter: assetConverter, maxSwapSlippage: 50})
+                aaveFlashloan, CLLeveragedPosition.CompoundParams({assetConverter: assetConverter, maxSwapSlippage: 50})
             );
         }
         {
-            (vars.fees0Before, vars.fees1Before) = uniswapV3Wrapper.getPendingFees(vars.tokenId);
+            (vars.fees0Before, vars.fees1Before) = _getPendingFees(vars.tokenId);
             // Do some movements to increase fees
             uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, vars.currentSqrtPrice * 101 / 100);
             uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, vars.currentSqrtPrice);
-            (vars.fees0After, vars.fees1After) = uniswapV3Wrapper.getPendingFees(vars.tokenId);
+            (vars.fees0After, vars.fees1After) = _getPendingFees(vars.tokenId);
             (uint256 fees0ToTreasury, uint256 fees1ToTreasury) = (
                 (vars.fees0After - vars.fees0Before) * vars.revenueFee / 1e4,
                 (vars.fees1After - vars.fees1Before) * vars.revenueFee / 1e4
@@ -556,7 +550,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             vm.prank(ALICE);
             position.deleverage(
                 aaveFlashloan,
-                BaseCLLeveragedPosition.DeleverageParams({
+                CLLeveragedPosition.DeleverageParams({
                     assetConverter: assetConverter,
                     receiver: ALICE,
                     maxSwapSlippage: 50,
@@ -586,7 +580,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         uniswapV3Testing.movePoolPrice(address(usdc), address(weth), 500, currentSqrtPrice * 10026 / 1e4);
 
         vm.prank(ALICE);
-        BaseCLLeveragedPosition.PositionInitParams memory params = BaseCLLeveragedPosition.PositionInitParams({
+        CLLeveragedPosition.PositionInitParams memory params = CLLeveragedPosition.PositionInitParams({
             tokenId: tokenId,
             tokenToBorrow: address(usdc),
             amountToBorrow: 1000e6,
@@ -595,7 +589,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
             owner: ALICE,
             maxSwapSlippage: 50
         });
-        vm.expectRevert(BaseCLLeveragedPosition.TooBigPoolPriceDeviation.selector);
+        vm.expectRevert(CLLeveragedPosition.TooBigPoolPriceDeviation.selector);
         uniswapV3Testing.positionManager.safeTransferFrom(
             ALICE, address(uniswapV3Leverage), tokenId, abi.encode(params)
         );
@@ -664,7 +658,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
 
         pos.position.rebalance(
             aaveFlashloan,
-            BaseCLLeveragedPosition.RebalanceParams({
+            CLLeveragedPosition.RebalanceParams({
                 assetConverter: assetConverter,
                 maxSwapSlippage: 50,
                 newTickLower: tickUpper,
@@ -685,7 +679,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         assertApproxEqRel(positionValueAfter, positionValueBefore, 0.01e18);
     }
 
-    function _calculatePositionNetWorth(BaseCLLeveragedPosition position) internal view returns (uint256) {
+    function _calculatePositionNetWorth(CLLeveragedPosition position) internal view returns (uint256) {
         IYLDROracle oracle = IYLDROracle(poolTesting.addressesProvider.getPriceOracle());
         IPool pool = IPool(poolTesting.addressesProvider.getPool());
 
@@ -696,7 +690,7 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         );
         uint256 wrappedTotalSupply = uniswapV3Wrapper.totalSupply(tokenId);
 
-        UniswapV3DataProvider.CLPositionData memory positionData = uniswapV3DataProvider.getPositionData(tokenId);
+        CLDataProvider.CLPositionData memory positionData = uniswapV3DataProvider.getPositionData(tokenId);
 
         uint256 positionValue = balance
             * _getUsdValue(positionData.amount0 + positionData.fee0, positionData.amount1 + positionData.fee1)
@@ -710,5 +704,10 @@ contract UniswapV3LeverageTest is BaseTest, IUniswapV3SwapCallback {
         uint256 debtValue = borrowedPrice * debtAmount / (10 ** IERC20Metadata(borrowedToken).decimals());
 
         return positionValue - debtValue;
+    }
+
+    function _getPendingFees(uint256 tokenId) internal view returns (uint256, uint256) {
+        BaseCLAdapter.PositionData memory positionData = uniswapV3Adapter.getPositionData(tokenId);
+        return uniswapV3Adapter.getPendingFees(positionData);
     }
 }

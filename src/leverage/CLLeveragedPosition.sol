@@ -17,24 +17,22 @@ import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155
 import {ERC721Holder} from "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/BaseCLAdapter.sol";
-import {BaseERC1155CLWrapper} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/BaseERC1155CLWrapper.sol";
+import {ERC1155CLWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapper.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {CLAdapterWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/CLAdapterWrapper.sol";
 
 /// @author YLDR <admin@apyflow.com>
 /// @notice This contract represents single leveraged position linked to a specific user
 /// This contract's funds mainly stored in yldr protocol and consist of wrapped into ERC1155 Uniswap LP Position
 /// and debt.
-abstract contract BaseCLLeveragedPosition is
-    BaseCLAdapter,
-    OwnableUpgradeable,
-    ERC1155Holder,
-    ERC721Holder,
-    IERC3156FlashBorrower
-{
+contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder, IERC3156FlashBorrower {
     using SafeERC20 for IERC20;
+    using CLAdapterWrapper for BaseCLAdapter;
 
     event Deleverage();
+    event Rebalance();
+    event Compound();
+    event DeleverageWithdrawLiquidity();
 
     error TooBigPoolPriceDeviation();
     error InvalidCaller();
@@ -64,14 +62,14 @@ abstract contract BaseCLLeveragedPosition is
     /// @notice Id of leveraged position. The safe Id is used in Uniswap V3 position manager and yldr's ERC1155 Uniswap wrapper
     uint256 public positionTokenId;
 
-    address public liquidityPool;
-    address public token0;
-    address public token1;
+    address liquidityPool;
+    address token0;
+    address token1;
     /// @notice Address of token which was borrowed to leverage position
     address public borrowedToken;
-    uint24 public fee;
-    int24 public tickLower;
-    int24 public tickUpper;
+    uint24 fee;
+    int24 tickLower;
+    int24 tickUpper;
 
     /// @dev Temporary variable used only to store flash loan provider address during flashloans
     /// Different providers may be used for deposits and withdrawals
@@ -82,10 +80,12 @@ abstract contract BaseCLLeveragedPosition is
     uint128 public lastFees1;
 
     IPoolAddressesProvider public immutable addressesProvider;
-    BaseERC1155CLWrapper public immutable positionWrapper;
+    ERC1155CLWrapper public immutable positionWrapper;
     IPool public immutable pool;
     uint256 public immutable revenueFeePercent;
-    address public immutable revenueFeeTreasury;
+    address immutable feeTreasury;
+    address immutable automationsManager;
+    BaseCLAdapter immutable adapter;
 
     /// @notice Params which are used to initialize position
     /// @param tokenId ID of position token
@@ -139,15 +139,18 @@ abstract contract BaseCLLeveragedPosition is
 
     constructor(
         IPoolAddressesProvider _addressesProvider,
-        BaseERC1155CLWrapper _positionWrapper,
+        ERC1155CLWrapper _positionWrapper,
         uint256 _revenueFeePercent,
-        address _revenueFeeTreasury
+        address _feeTreasury,
+        address _automationsManager
     ) {
         addressesProvider = _addressesProvider;
         pool = IPool(addressesProvider.getPool());
         positionWrapper = _positionWrapper;
         revenueFeePercent = _revenueFeePercent;
-        revenueFeeTreasury = _revenueFeeTreasury;
+        feeTreasury = _feeTreasury;
+        automationsManager = _automationsManager;
+        adapter = _positionWrapper.adapter();
     }
 
     /// @notice Initializer of the contract. Sets storage variables and performs leveraging operations
@@ -162,14 +165,14 @@ abstract contract BaseCLLeveragedPosition is
         borrowedToken = params.tokenToBorrow;
 
         {
-            PositionData memory position = _getPositionData(params.tokenId);
+            BaseCLAdapter.PositionData memory position = adapter.getPositionData(params.tokenId);
             token0 = position.token0;
             token1 = position.token1;
             fee = position.fee;
             tickLower = position.tickLower;
             tickUpper = position.tickUpper;
 
-            liquidityPool = _getPool(position);
+            liquidityPool = adapter.getPool(position);
         }
 
         address[] memory assets = new address[](1);
@@ -194,8 +197,8 @@ abstract contract BaseCLLeveragedPosition is
             positionTokenId: positionTokenId,
             fee: fee,
             liquidityPool: liquidityPool,
-            token0Decimals: IERC20Metadata(token0).decimals(),
-            token1Decimals: IERC20Metadata(token1).decimals(),
+            token0Decimals: _getDecimals(token0),
+            token1Decimals: _getDecimals(token1),
             token0Price: oracle.getAssetPrice(token0),
             token1Price: oracle.getAssetPrice(token1),
             revenueFee: revenueFee
@@ -213,6 +216,10 @@ abstract contract BaseCLLeveragedPosition is
         flashLoanProvider = _flashLoanProvider;
         flashLoanProvider.flashLoan(this, token, amount, abi.encode(purpose, params));
         flashLoanProvider = IERC3156FlashLender(address(0));
+    }
+
+    function _checkAutomations() internal view {
+        if (msg.sender != automationsManager) revert InvalidCaller();
     }
 
     /// @notice Function to perform swaps through user-supplied assetConverter.
@@ -247,8 +254,8 @@ abstract contract BaseCLLeveragedPosition is
         view
         returns (uint256 amountToSwapFor0, uint256 amountToSwapFor1)
     {
-        uint128 liquidity = _getPositionData(cache.positionTokenId).liquidity;
-        (uint160 sqrtPriceX96,) = _getPoolState(cache.liquidityPool);
+        uint128 liquidity = adapter.getPositionData(cache.positionTokenId).liquidity;
+        (uint160 sqrtPriceX96,) = adapter.getPoolState(cache.liquidityPool);
         (uint256 amount0, uint256 amount1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96, TickMath.getSqrtRatioAtTick(tickLower), TickMath.getSqrtRatioAtTick(tickUpper), liquidity
         );
@@ -279,12 +286,12 @@ abstract contract BaseCLLeveragedPosition is
     ) internal view returns (bool zeroForOne, uint256 amount) {
         DetermineSwapVars memory vars;
 
-        (vars.sqrtPriceX96,) = _getPoolState(cache.liquidityPool);
+        (vars.sqrtPriceX96,) = adapter.getPoolState(cache.liquidityPool);
         (vars.amount0Current, vars.amount1Current) = LiquidityAmounts.getAmountsForLiquidity(
             vars.sqrtPriceX96,
             TickMath.getSqrtRatioAtTick(positionTickLower),
             TickMath.getSqrtRatioAtTick(positionTickUpper),
-            _getPoolLiquidity(cache.liquidityPool) // can be any value basically
+            adapter.getPoolLiquidity(cache.liquidityPool) // can be any value basically
         );
 
         vars.amount0CurrentUSD = vars.amount0Current * cache.token0Price / (10 ** cache.token0Decimals);
@@ -306,7 +313,7 @@ abstract contract BaseCLLeveragedPosition is
     }
 
     function _checkPoolPrice(Cache memory cache, uint256 maxSlippage) internal view {
-        (uint160 sqrtPriceX96,) = _getPoolState(cache.liquidityPool);
+        (uint160 sqrtPriceX96,) = adapter.getPoolState(cache.liquidityPool);
         uint256 expectedSqrtPriceX96 = _calculateOracleSqrtPriceX96(cache);
         uint256 _delta = Math.mulDiv(sqrtPriceX96, 1e4, expectedSqrtPriceX96) ** 2 / 1e4;
         uint256 delta = _delta > 1e4 ? _delta - 1e4 : 1e4 - _delta;
@@ -359,19 +366,15 @@ abstract contract BaseCLLeveragedPosition is
             params.assetConverter, params.tokenToBorrow, cache.token1, vars.amountToSwapFor1, params.maxSwapSlippage
         );
 
-        IERC20(cache.token0).forceApprove(_getPositionManager(), vars.amount0);
-        IERC20(cache.token1).forceApprove(_getPositionManager(), vars.amount1);
-
         // Add liquidity
-        (vars.amount0Resulted, vars.amount1Resulted) =
-            _increaseLiquidity(cache.positionTokenId, vars.amount0, vars.amount1);
+        (vars.amount0Resulted, vars.amount1Resulted) = _increaseLiquidity(cache, vars.amount0, vars.amount1);
 
         // Send leftovers to user
         _transferTokens(cache, params.owner, vars.amount0 - vars.amount0Resulted, vars.amount1 - vars.amount1Resulted);
 
         if (revenueFeePercent > 0) {
             uint256 debtValue = params.amountToBorrow * cache.oracle.getAssetPrice(params.tokenToBorrow)
-                / (10 ** IERC20Metadata(params.tokenToBorrow).decimals());
+                / (10 ** _getDecimals(params.tokenToBorrow));
             uint256 positionValue = cache.oracle.getERC1155AssetPrice(address(positionWrapper), cache.positionTokenId);
 
             // Only take revenue fee from borrowed funds
@@ -382,8 +385,8 @@ abstract contract BaseCLLeveragedPosition is
     }
 
     function _getPositionUSDValues(Cache memory cache) internal view returns (uint256 usdLiquidity, uint256 usdFees) {
-        PositionData memory position = _getPositionData(cache.positionTokenId);
-        (uint160 sqrtPriceX96,) = _getPoolState(cache.liquidityPool);
+        BaseCLAdapter.PositionData memory position = adapter.getPositionData(cache.positionTokenId);
+        (uint160 sqrtPriceX96,) = adapter.getPoolState(cache.liquidityPool);
 
         (uint256 amount0, uint256 amount1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96,
@@ -397,7 +400,7 @@ abstract contract BaseCLLeveragedPosition is
 
         usdLiquidity = amount0USD + amount1USD;
 
-        (uint256 fees0, uint256 fees1) = _getPendingFees(position);
+        (uint256 fees0, uint256 fees1) = adapter.getPendingFees(position);
 
         uint256 fees0USD = fees0 * cache.token0Price / (10 ** cache.token0Decimals);
         uint256 fees1USD = fees1 * cache.token1Price / (10 ** cache.token1Decimals);
@@ -441,13 +444,12 @@ abstract contract BaseCLLeveragedPosition is
             }
             (uint256 amount0Total, uint256 amount1Total) = _collectFees({
                 tokenId: cache.positionTokenId,
-                receiver: address(this),
                 // Collect everything if we are withdrawing liquidity, otherwise only amounts for repayment and revenue fees.
                 amount0Max: withdrawLiquidity ? type(uint128).max : uint128(amount0ForRepayment + amounts.revenueFee0),
                 amount1Max: withdrawLiquidity ? type(uint128).max : uint128(amount1ForRepayment + amounts.revenueFee1)
             });
 
-            _transferTokens(cache, revenueFeeTreasury, amounts.revenueFee0, amounts.revenueFee1);
+            _transferTokens(cache, feeTreasury, amounts.revenueFee0, amounts.revenueFee1);
 
             if (withdrawLiquidity) {
                 _transferTokens(
@@ -458,7 +460,9 @@ abstract contract BaseCLLeveragedPosition is
                 );
             } else {
                 // Send NFT to owner, we don't need it anymore
-                IERC721(_getPositionManager()).safeTransferFrom(address(this), receiver, cache.positionTokenId, "");
+                IERC721(adapter.getPositionManager()).safeTransferFrom(
+                    address(this), receiver, cache.positionTokenId, ""
+                );
             }
         } else {
             // If we are not the only owner of LP, we can't unwrap it, so we need to burn our shares
@@ -477,7 +481,7 @@ abstract contract BaseCLLeveragedPosition is
             uint256 amount0ToTreasury = amount0Needed - amount0ForRepayment;
             uint256 amount1ToTreasury = amount1Needed - amount1ForRepayment;
 
-            _transferTokens(cache, revenueFeeTreasury, amount0ToTreasury, amount1ToTreasury);
+            _transferTokens(cache, feeTreasury, amount0ToTreasury, amount1ToTreasury);
         }
     }
 
@@ -492,7 +496,7 @@ abstract contract BaseCLLeveragedPosition is
         view
         returns (uint256 liquidityToBurn, uint256 liquidityForRepayment, uint256 feePercentForRepayment)
     {
-        uint128 liquidity = _getPositionData(cache.positionTokenId).liquidity;
+        uint128 liquidity = adapter.getPositionData(cache.positionTokenId).liquidity;
 
         // We want to avoid touching user fees during repayment if possible.
         if (amounts.usdRepayment <= amounts.usdLiquidityValue) {
@@ -547,11 +551,11 @@ abstract contract BaseCLLeveragedPosition is
         (amounts.usdLiquidityValue, amounts.usdFeesValue) = _getPositionUSDValues(cache);
         amounts.usdPositionValue = balance * (amounts.usdLiquidityValue + amounts.usdFeesValue) / wrappedTotalSupply;
         uint256 debtValue =
-            debtAmount * cache.oracle.getAssetPrice(borrowedToken) / (10 ** IERC20Metadata(borrowedToken).decimals());
+            debtAmount * cache.oracle.getAssetPrice(borrowedToken) / (10 ** _getDecimals(cache.borrowedToken));
 
         // Consider slippage, if we will end up with more than needed, rest will be sent to receiver as well
         amounts.usdRepayment = Math.min(amounts.usdPositionValue, Math.mulDiv(debtValue, (1e4 + maxSwapSlippage), 1e4));
-        (amounts.fees0, amounts.fees1) = positionWrapper.getPendingFees(cache.positionTokenId);
+        (amounts.fees0, amounts.fees1) = _getPendingFees(cache);
         if (cache.revenueFee > 0) {
             amounts.revenueFee0 = Math.mulDiv(amounts.fees0 - lastFees0, cache.revenueFee, 1e4);
             amounts.revenueFee1 = Math.mulDiv(amounts.fees1 - lastFees1, cache.revenueFee, 1e4);
@@ -574,12 +578,7 @@ abstract contract BaseCLLeveragedPosition is
     /// @param flashFee Fee of flashloan
     function _deleverageInsideFlashloan(DeleverageParams memory params, uint256 amount, uint256 flashFee) internal {
         Cache memory cache = _getCache();
-
-        // Repay debt with flashloaned funds
-        IERC20(cache.borrowedToken).forceApprove(address(pool), amount);
-        if (amount > 0) {
-            pool.repay(cache.borrowedToken, amount, address(this));
-        }
+        _repayFullDebtAndPayAutomations(cache, amount);
 
         // Withdraw LP
         uint256 balance =
@@ -611,10 +610,7 @@ abstract contract BaseCLLeveragedPosition is
 
     function _repayAndUnwrap(Cache memory cache, uint256 amount) internal {
         // Repay debt with flashloaned funds
-        IERC20(cache.borrowedToken).forceApprove(address(pool), amount);
-        if (amount > 0) {
-            pool.repay(cache.borrowedToken, amount, address(this));
-        }
+        _repayFullDebtAndPayAutomations(cache, amount);
 
         // Withdraw LP
         pool.withdrawERC1155(address(positionWrapper), cache.positionTokenId, type(uint256).max, address(this));
@@ -623,7 +619,9 @@ abstract contract BaseCLLeveragedPosition is
 
     function _wrapAndBorrow(Cache memory cache, uint256 amount) internal {
         // Wrap LP
-        IERC721(_getPositionManager()).safeTransferFrom(address(this), address(positionWrapper), cache.positionTokenId);
+        IERC721(adapter.getPositionManager()).safeTransferFrom(
+            address(this), address(positionWrapper), cache.positionTokenId
+        );
 
         if (!positionWrapper.isApprovedForAll(address(this), address(pool))) {
             positionWrapper.setApprovalForAll(address(pool), true);
@@ -646,12 +644,7 @@ abstract contract BaseCLLeveragedPosition is
 
         _repayAndUnwrap(cache, debtAmount);
 
-        (uint256 amount0, uint256 amount1) = _collectFees({
-            tokenId: cache.positionTokenId,
-            amount0Max: type(uint128).max,
-            amount1Max: type(uint128).max,
-            receiver: address(this)
-        });
+        (uint256 amount0, uint256 amount1) = _collectFees(cache.positionTokenId, type(uint128).max, type(uint128).max);
 
         if (cache.revenueFee > 0) {
             uint256 fees0ToTreasury = Math.mulDiv(amount0 - lastFees0, cache.revenueFee, 1e4);
@@ -660,7 +653,7 @@ abstract contract BaseCLLeveragedPosition is
             amount0 -= fees0ToTreasury;
             amount1 -= fees1ToTreasury;
 
-            _transferTokens(cache, revenueFeeTreasury, fees0ToTreasury, fees1ToTreasury);
+            _transferTokens(cache, feeTreasury, fees0ToTreasury, fees1ToTreasury);
         }
 
         // Divide and swap rewards
@@ -674,11 +667,8 @@ abstract contract BaseCLLeveragedPosition is
             amount0 += _swap(params.assetConverter, cache.token1, cache.token0, amount, params.maxSwapSlippage);
         }
 
-        IERC20(cache.token0).forceApprove(_getPositionManager(), amount0);
-        IERC20(cache.token1).forceApprove(_getPositionManager(), amount1);
-
         // Add liquidity
-        (uint256 amount0Resulted, uint256 amount1Resulted) = _increaseLiquidity(cache.positionTokenId, amount0, amount1);
+        (uint256 amount0Resulted, uint256 amount1Resulted) = _increaseLiquidity(cache, amount0, amount1);
 
         _transferTokens(
             cache,
@@ -709,15 +699,10 @@ abstract contract BaseCLLeveragedPosition is
 
         _repayAndUnwrap(cache, debtAmount);
 
-        uint128 liquidity = _getPositionData(cache.positionTokenId).liquidity;
+        uint128 liquidity = adapter.getPositionData(cache.positionTokenId).liquidity;
         (uint256 amount0FromLiuqidity, uint256 amount1FromLiquidity) =
             _decreaseLiquidity(cache.positionTokenId, liquidity);
-        (uint256 amount0, uint256 amount1) = _collectFees({
-            tokenId: cache.positionTokenId,
-            receiver: address(this),
-            amount0Max: type(uint128).max,
-            amount1Max: type(uint128).max
-        });
+        (uint256 amount0, uint256 amount1) = _collectFees(cache.positionTokenId, type(uint128).max, type(uint128).max);
 
         if (revenueFee > 0) {
             uint256 fees0ToTreasury = Math.mulDiv(amount0 - amount0FromLiuqidity, revenueFee, 1e4);
@@ -726,7 +711,7 @@ abstract contract BaseCLLeveragedPosition is
             amount0 -= fees0ToTreasury;
             amount1 -= fees1ToTreasury;
 
-            _transferTokens(cache, revenueFeeTreasury, fees0ToTreasury, fees1ToTreasury);
+            _transferTokens(cache, feeTreasury, fees0ToTreasury, fees1ToTreasury);
         }
 
         {
@@ -742,12 +727,12 @@ abstract contract BaseCLLeveragedPosition is
             }
         }
 
-        IERC20(cache.token0).forceApprove(_getPositionManager(), amount0);
-        IERC20(cache.token1).forceApprove(_getPositionManager(), amount1);
+        IERC20(cache.token0).forceApprove(adapter.getPositionManager(), amount0);
+        IERC20(cache.token1).forceApprove(adapter.getPositionManager(), amount1);
 
         // Mint new position
-        (uint256 tokenId,, uint256 amount0Resulted, uint256 amount1Resulted) = _mintPosition(
-            MintParams({
+        (uint256 tokenId,, uint256 amount0Resulted, uint256 amount1Resulted) = adapter.delegateMintPosition(
+            BaseCLAdapter.MintParams({
                 token0: cache.token0,
                 token1: cache.token1,
                 fee: cache.fee,
@@ -819,6 +804,18 @@ abstract contract BaseCLLeveragedPosition is
         return keccak256("ERC3156FlashBorrower.onFlashLoan");
     }
 
+    function _deleverage(IERC3156FlashLender flashloanProvider, DeleverageParams memory params, uint256 automationFee)
+        internal
+    {
+        _takeFlashloan(
+            flashloanProvider, borrowedToken, getDebt() + automationFee, FlashloanPurpose.Deleverage, abi.encode(params)
+        );
+        emit Deleverage();
+        if (params.withdrawLiquidity) {
+            emit DeleverageWithdrawLiquidity();
+        }
+    }
+
     /// @notice Function only callable by position owner to deleverage position
     /// It performs following steps:
     /// 1. Take flashloan
@@ -829,10 +826,24 @@ abstract contract BaseCLLeveragedPosition is
     /// 6. Repay flashloan with tokens taken from position
     function deleverage(IERC3156FlashLender flashloanProvider, DeleverageParams memory params) external {
         _checkOwner();
+        _deleverage(flashloanProvider, params, 0);
+    }
 
-        _takeFlashloan(flashloanProvider, borrowedToken, _getDebt(), FlashloanPurpose.Deleverage, abi.encode(params));
+    function deleverageAutomation(
+        IERC3156FlashLender flashloanProvider,
+        DeleverageParams memory params,
+        uint256 automationFee
+    ) external {
+        _checkAutomations();
+        _deleverage(flashloanProvider, params, automationFee);
+    }
 
-        emit Deleverage();
+    function _compound(IERC3156FlashLender flashloanProvider, CompoundParams memory params, uint256 automationFee)
+        internal
+    {
+        _takeFlashloan(
+            flashloanProvider, borrowedToken, getDebt() + automationFee, FlashloanPurpose.Compound, abi.encode(params)
+        );
     }
 
     /// @notice Function only callable by position owner to compound fees
@@ -846,25 +857,95 @@ abstract contract BaseCLLeveragedPosition is
     /// 8. Repay flashloan with borrowed tokens
     function compound(IERC3156FlashLender flashloanProvider, CompoundParams memory params) external {
         _checkOwner();
+        _compound(flashloanProvider, params, 0);
 
-        _takeFlashloan(flashloanProvider, borrowedToken, _getDebt(), FlashloanPurpose.Compound, abi.encode(params));
+        emit Compound();
+    }
+
+    function compoundAutomation(
+        IERC3156FlashLender flashloanProvider,
+        CompoundParams memory params,
+        uint256 automationFee
+    ) external {
+        _checkAutomations();
+        _compound(flashloanProvider, params, automationFee);
+    }
+
+    function _rebalance(IERC3156FlashLender flashloanProvider, RebalanceParams memory params, uint256 automationFee)
+        internal
+    {
+        _takeFlashloan(
+            flashloanProvider, borrowedToken, getDebt() + automationFee, FlashloanPurpose.Rebalance, abi.encode(params)
+        );
     }
 
     /// @notice Function only callable by position owner to rebalance position
     function rebalance(IERC3156FlashLender flashloanProvider, RebalanceParams memory params) external {
         _checkOwner();
+        _rebalance(flashloanProvider, params, 0);
 
-        _takeFlashloan(flashloanProvider, borrowedToken, _getDebt(), FlashloanPurpose.Rebalance, abi.encode(params));
+        emit Rebalance();
+    }
+
+    function rebalanceAutomation(
+        IERC3156FlashLender flashloanProvider,
+        RebalanceParams memory params,
+        uint256 automationFee
+    ) external {
+        _checkAutomations();
+        _rebalance(flashloanProvider, params, automationFee);
     }
 
     function _updateLastPendingFees(Cache memory cache) internal {
-        (uint256 fees0, uint256 fees1) = positionWrapper.getPendingFees(cache.positionTokenId);
+        (uint256 fees0, uint256 fees1) = _getPendingFees(cache);
         lastFees0 = uint128(fees0);
         lastFees1 = uint128(fees1);
     }
 
-    function _getDebt() internal view returns (uint256) {
+    function _repayFullDebtAndPayAutomations(Cache memory cache, uint256 amount) internal {
+        uint256 debt = getDebt();
+        IERC20(cache.borrowedToken).safeTransfer(feeTreasury, amount - debt);
+        IERC20(cache.borrowedToken).forceApprove(address(pool), debt);
+        pool.repay(cache.borrowedToken, debt, address(this));
+    }
+
+    function getDebt() public view returns (uint256) {
         return IERC20(IPool(addressesProvider.getPool()).getReserveData(borrowedToken).variableDebtTokenAddress)
             .balanceOf(address(this));
+    }
+
+    function _getPendingFees(Cache memory cache) internal view returns (uint256 fees0, uint256 fees1) {
+        BaseCLAdapter.PositionData memory position = adapter.getPositionData(cache.positionTokenId);
+        return adapter.getPendingFees(position);
+    }
+
+    function _increaseLiquidity(Cache memory cache, uint256 amount0, uint256 amount1)
+        internal
+        returns (uint256, uint256)
+    {
+        IERC20(cache.token0).forceApprove(adapter.getPositionManager(), amount0);
+        IERC20(cache.token1).forceApprove(adapter.getPositionManager(), amount1);
+
+        return adapter.delegateIncreaseLiquidity(cache.positionTokenId, amount0, amount1);
+    }
+
+    function _decreaseLiquidity(uint256 tokenId, uint128 liquidity) internal returns (uint256, uint256) {
+        return adapter.delegateDecreaseLiquidity(tokenId, liquidity);
+    }
+
+    function _collectFees(uint256 tokenId, uint128 amount0Max, uint128 amount1Max)
+        internal
+        returns (uint256, uint256)
+    {
+        return adapter.delegateCollectFees({
+            tokenId: tokenId,
+            amount0Max: amount0Max,
+            amount1Max: amount1Max,
+            recipient: address(this)
+        });
+    }
+
+    function _getDecimals(address token) internal view returns (uint8) {
+        return IERC20Metadata(token).decimals();
     }
 }

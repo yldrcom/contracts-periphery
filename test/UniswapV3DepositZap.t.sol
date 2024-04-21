@@ -5,12 +5,9 @@ import {UniswapV3Testing} from "@yldr-lending/core/test/libraries/UniswapV3Testi
 import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
 import {console2} from "forge-std/console2.sol";
 import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import {ERC1155UniswapV3Wrapper} from
-    "@yldr-lending/core/src/protocol/concentrated-liquidity/erc1155-wrappers/ERC1155UniswapV3Wrapper.sol";
 import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
 import {ERC1155CLWrapperOracle} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperOracle.sol";
 import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {YLDRCLLeverage, BaseCLLeveragedPosition} from "../src/leverage/YLDRCLLeverage.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IPool} from "@yldr-lending/core/src/interfaces/IPool.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -19,6 +16,10 @@ import {CLDepositZap} from "../src/CLDepositZap.sol";
 import {INToken} from "@yldr-lending/core/src/interfaces/INToken.sol";
 import {ERC1155CLWrapperConfigurationProvider} from
     "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapperConfigurationProvider.sol";
+import {ERC1155CLWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapper.sol";
+import {YLDRCLLeverage} from "../src/leverage/YLDRCLLeverage.sol";
+import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/BaseCLAdapter.sol";
+import {UniswapV3Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/UniswapV3Adapter.sol";
 
 contract CLDepositZapTest is BaseTest {
     using PoolTesting for PoolTesting.Data;
@@ -31,7 +32,8 @@ contract CLDepositZapTest is BaseTest {
     PoolTesting.Data poolTesting;
     UniswapV3Testing.Data uniswapV3Testing;
 
-    ERC1155UniswapV3Wrapper uniswapV3Wrapper;
+    BaseCLAdapter uniswapV3Adapter;
+    ERC1155CLWrapper uniswapV3Wrapper;
     YLDRCLLeverage uniswapV3Leverage;
 
     CLDepositZap zap;
@@ -45,12 +47,13 @@ contract CLDepositZapTest is BaseTest {
 
         uniswapV3Testing.init(INonfungiblePositionManager(0xC36442b4a4522E871399CD717aBDD847Ab11FE88));
 
-        uniswapV3Wrapper = ERC1155UniswapV3Wrapper(
+        uniswapV3Adapter = new UniswapV3Adapter(address(uniswapV3Testing.positionManager));
+        uniswapV3Wrapper = ERC1155CLWrapper(
             address(
                 new TransparentUpgradeableProxy(
-                    address(new ERC1155UniswapV3Wrapper(address(uniswapV3Testing.positionManager))),
+                    address(new ERC1155CLWrapper(uniswapV3Adapter)),
                     ADMIN,
-                    abi.encodeCall(ERC1155UniswapV3Wrapper.initialize, ())
+                    abi.encodeCall(ERC1155CLWrapper.initialize, ())
                 )
             )
         );
@@ -85,11 +88,7 @@ contract CLDepositZapTest is BaseTest {
 
         poolTesting.addERC1155Reserve(
             address(uniswapV3Wrapper),
-            address(
-                new ERC1155CLWrapperConfigurationProvider(
-                    IPool(poolTesting.addressesProvider.getPool()), uniswapV3Wrapper
-                )
-            ),
+            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, uniswapV3Wrapper)),
             address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
             ADMIN,
             0.2e4
