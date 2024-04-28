@@ -27,6 +27,11 @@ contract CLLeverageDataProvider {
     constructor(CLDataProvider _dataProvider, YLDRCLLeverage _leverage) {
         dataProvider = _dataProvider;
         leverage = _leverage;
+
+        require(
+            dataProvider.adapter() == CLLeveragedPosition(_leverage.implementation()).positionWrapper().adapter(),
+            "INVALID_ADAPTER"
+        );
     }
 
     function getGlobalRevenueFee() public view returns (uint256) {

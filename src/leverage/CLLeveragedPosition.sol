@@ -62,7 +62,7 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
     /// @notice Id of leveraged position. The safe Id is used in Uniswap V3 position manager and yldr's ERC1155 Uniswap wrapper
     uint256 public positionTokenId;
 
-    address liquidityPool;
+    address public liquidityPool;
     address token0;
     address token1;
     /// @notice Address of token which was borrowed to leverage position
@@ -475,13 +475,15 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
 
             _transferTokens(cache, receiver, amount0Total - amount0Needed, amount1Total - amount1Needed);
 
-            amount0ForRepayment = amount0Needed * amounts.usdRepayment / usdAmountNeeded;
-            amount1ForRepayment = amount1Needed * amounts.usdRepayment / usdAmountNeeded;
+            if (usdAmountNeeded > 0) {
+                amount0ForRepayment = amount0Needed * amounts.usdRepayment / usdAmountNeeded;
+                amount1ForRepayment = amount1Needed * amounts.usdRepayment / usdAmountNeeded;
 
-            uint256 amount0ToTreasury = amount0Needed - amount0ForRepayment;
-            uint256 amount1ToTreasury = amount1Needed - amount1ForRepayment;
+                uint256 amount0ToTreasury = amount0Needed - amount0ForRepayment;
+                uint256 amount1ToTreasury = amount1Needed - amount1ForRepayment;
 
-            _transferTokens(cache, feeTreasury, amount0ToTreasury, amount1ToTreasury);
+                _transferTokens(cache, feeTreasury, amount0ToTreasury, amount1ToTreasury);
+            }
         }
     }
 
@@ -557,8 +559,7 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
         amounts.usdRepayment = Math.min(amounts.usdPositionValue, Math.mulDiv(debtValue, (1e4 + maxSwapSlippage), 1e4));
         (amounts.fees0, amounts.fees1) = _getPendingFees(cache);
         if (cache.revenueFee > 0) {
-            amounts.revenueFee0 = Math.mulDiv(amounts.fees0 - lastFees0, cache.revenueFee, 1e4);
-            amounts.revenueFee1 = Math.mulDiv(amounts.fees1 - lastFees1, cache.revenueFee, 1e4);
+            (amounts.revenueFee0, amounts.revenueFee1) = _calculateRevenueFee(amounts.fees0, amounts.fees1);
 
             amounts.usdRevenueFee = amounts.revenueFee0 * cache.token0Price / (10 ** cache.token0Decimals)
                 + amounts.revenueFee1 * cache.token1Price / (10 ** cache.token1Decimals);
@@ -574,11 +575,13 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
 
     /// @notice Function which deleverages position
     /// @param params Params which are used to deleverage position
-    /// @param amount Amount of flashloan
+    /// @param flashAmount Amount of flashloan
     /// @param flashFee Fee of flashloan
-    function _deleverageInsideFlashloan(DeleverageParams memory params, uint256 amount, uint256 flashFee) internal {
+    function _deleverageInsideFlashloan(DeleverageParams memory params, uint256 flashAmount, uint256 flashFee)
+        internal
+    {
         Cache memory cache = _getCache();
-        _repayFullDebtAndPayAutomations(cache, amount);
+        _repayFullDebtAndPayAutomations(cache, flashAmount);
 
         // Withdraw LP
         uint256 balance =
@@ -587,30 +590,30 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
 
         DeleverageAmounts memory amounts = _calculateDeleverageAmounts({
             cache: cache,
-            debtAmount: amount + flashFee,
+            debtAmount: flashAmount + flashFee,
             maxSwapSlippage: params.maxSwapSlippage,
             balance: balance,
             wrappedTotalSupply: wrappedTotalSupply
         });
 
         // Aquire amounts to swap into borrowed token
-        (uint256 amount0, uint256 amount1) =
+        (uint256 amount0ForRepayment, uint256 amount1ForRepayment) =
             _burnPartAndWithdrawRest(cache, amounts, params.receiver, params.withdrawLiquidity);
 
         // Swap tokens to repay debt
         uint256 amountForRepayment = _swap(
-            params.assetConverter, cache.token0, cache.borrowedToken, amount0, params.maxSwapSlippage
-        ) + _swap(params.assetConverter, cache.token1, cache.borrowedToken, amount1, params.maxSwapSlippage);
+            params.assetConverter, cache.token0, cache.borrowedToken, amount0ForRepayment, params.maxSwapSlippage
+        ) + _swap(params.assetConverter, cache.token1, cache.borrowedToken, amount1ForRepayment, params.maxSwapSlippage);
 
-        if (amountForRepayment > amount + flashFee) {
+        if (amountForRepayment > flashAmount + flashFee) {
             // If we have leftovers, send them to user
-            IERC20(cache.borrowedToken).safeTransfer(params.receiver, amountForRepayment - amount - flashFee);
+            IERC20(cache.borrowedToken).safeTransfer(params.receiver, amountForRepayment - flashAmount - flashFee);
         }
     }
 
-    function _repayAndUnwrap(Cache memory cache, uint256 amount) internal {
+    function _repayAndUnwrap(Cache memory cache, uint256 flashAmount) internal {
         // Repay debt with flashloaned funds
-        _repayFullDebtAndPayAutomations(cache, amount);
+        _repayFullDebtAndPayAutomations(cache, flashAmount);
 
         // Withdraw LP
         pool.withdrawERC1155(address(positionWrapper), cache.positionTokenId, type(uint256).max, address(this));
@@ -638,17 +641,16 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
         pool.borrow(cache.borrowedToken, amount, 0, address(this));
     }
 
-    function _compoundInsideFlashloan(CompoundParams memory params, uint256 debtAmount, uint256 flashFee) internal {
+    function _compoundInsideFlashloan(CompoundParams memory params, uint256 flashAmount, uint256 flashFee) internal {
         Cache memory cache = _getCache();
         _checkPoolPrice(cache, params.maxSwapSlippage);
 
-        _repayAndUnwrap(cache, debtAmount);
+        _repayAndUnwrap(cache, flashAmount);
 
         (uint256 amount0, uint256 amount1) = _collectFees(cache.positionTokenId, type(uint128).max, type(uint128).max);
 
         if (cache.revenueFee > 0) {
-            uint256 fees0ToTreasury = Math.mulDiv(amount0 - lastFees0, cache.revenueFee, 1e4);
-            uint256 fees1ToTreasury = Math.mulDiv(amount1 - lastFees1, cache.revenueFee, 1e4);
+            (uint256 fees0ToTreasury, uint256 fees1ToTreasury) = _calculateRevenueFee(amount0, amount1);
 
             amount0 -= fees0ToTreasury;
             amount1 -= fees1ToTreasury;
@@ -677,7 +679,7 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
             amount1 > amount1Resulted ? amount1 - amount1Resulted : 0
         );
 
-        _wrapAndBorrow(cache, debtAmount + flashFee);
+        _wrapAndBorrow(cache, flashAmount + flashFee);
 
         if (revenueFee > 0) {
             _updateLastPendingFees(cache);
@@ -693,20 +695,22 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
         }
     }
 
-    function _rebalanceInsideFlashloan(RebalanceParams memory params, uint256 debtAmount, uint256 flashFee) internal {
+    function _rebalanceInsideFlashloan(RebalanceParams memory params, uint256 flashAmount, uint256 flashFee) internal {
         Cache memory cache = _getCache();
         _checkPoolPrice(cache, params.maxSwapSlippage);
 
-        _repayAndUnwrap(cache, debtAmount);
+        _repayAndUnwrap(cache, flashAmount);
 
+        // Decrease liquidity and collect all funds
         uint128 liquidity = adapter.getPositionData(cache.positionTokenId).liquidity;
-        (uint256 amount0FromLiuqidity, uint256 amount1FromLiquidity) =
+        (uint256 amount0FromLiquidity, uint256 amount1FromLiquidity) =
             _decreaseLiquidity(cache.positionTokenId, liquidity);
         (uint256 amount0, uint256 amount1) = _collectFees(cache.positionTokenId, type(uint128).max, type(uint128).max);
 
         if (revenueFee > 0) {
-            uint256 fees0ToTreasury = Math.mulDiv(amount0 - amount0FromLiuqidity, revenueFee, 1e4);
-            uint256 fees1ToTreasury = Math.mulDiv(amount1 - amount1FromLiquidity, revenueFee, 1e4);
+            uint256 fees0 = amount0 - amount0FromLiquidity;
+            uint256 fees1 = amount1 - amount1FromLiquidity;
+            (uint256 fees0ToTreasury, uint256 fees1ToTreasury) = _calculateRevenueFee(fees0, fees1);
 
             amount0 -= fees0ToTreasury;
             amount1 -= fees1ToTreasury;
@@ -759,7 +763,7 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
             amount1 > amount1Resulted ? amount1 - amount1Resulted : 0
         );
 
-        _wrapAndBorrow(cache, debtAmount + flashFee);
+        _wrapAndBorrow(cache, flashAmount + flashFee);
 
         if (revenueFee > 0) {
             _updateLastPendingFees(cache);
@@ -902,11 +906,12 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
         lastFees1 = uint128(fees1);
     }
 
-    function _repayFullDebtAndPayAutomations(Cache memory cache, uint256 amount) internal {
+    // Repays debt with flashloaned funds and treats leftovers as automations fee.
+    function _repayFullDebtAndPayAutomations(Cache memory cache, uint256 flashAmount) internal {
         uint256 debt = getDebt();
-        IERC20(cache.borrowedToken).safeTransfer(feeTreasury, amount - debt);
+        IERC20(cache.borrowedToken).safeTransfer(feeTreasury, flashAmount - debt);
         IERC20(cache.borrowedToken).forceApprove(address(pool), debt);
-        pool.repay(cache.borrowedToken, debt, address(this));
+        if (debt > 0) pool.repay(cache.borrowedToken, debt, address(this));
     }
 
     function getDebt() public view returns (uint256) {
@@ -947,5 +952,21 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
 
     function _getDecimals(address token) internal view returns (uint8) {
         return IERC20Metadata(token).decimals();
+    }
+
+    function _calculateRevenueFee(uint256 currentFees0, uint256 currentFees1)
+        internal
+        view
+        returns (uint256, uint256)
+    {
+        uint256 accrued0 = (currentFees0 > lastFees0) ? currentFees0 - lastFees0 : 0;
+        uint256 accrued1 = (currentFees1 > lastFees1) ? currentFees1 - lastFees1 : 0;
+
+        return (accrued0 * revenueFee / 1e4, accrued1 * revenueFee / 1e4);
+    }
+
+    // kept for backwards compatibility
+    function uniswapV3Pool() external view returns (address) {
+        return liquidityPool;
     }
 }

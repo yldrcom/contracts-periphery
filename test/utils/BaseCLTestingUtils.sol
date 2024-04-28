@@ -85,5 +85,13 @@ abstract contract BaseCLTestingUtils is StdCheats {
         movePoolPrice(adapter.getPool(adapter.getPositionData(positionTokenId)), tick);
     }
 
+    function movePoolPrice(address token0, address token1, uint24 fee, uint160 targetSqrtPriceX96) public {
+        BaseCLAdapter.PositionData memory data;
+        data.token0 = token0;
+        data.token1 = token1;
+        data.fee = fee;
+        _movePoolPrice(adapter.getPool(data), targetSqrtPriceX96);
+    }
+
     function _movePoolPrice(address pool, uint160 targetSqrtPriceX96) internal virtual;
 }

@@ -1,15 +1,15 @@
 pragma solidity ^0.8.10;
 
 import {BaseCLTestingUtils} from "./BaseCLTestingUtils.sol";
-import {AlgebraV1Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/AlgebraV1Adapter.sol";
-import {IAlgebraPool} from "@algebra/src/interfaces/IAlgebraPool.sol";
+import {UniswapV3Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/UniswapV3Adapter.sol";
+import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-contract AlgebraV1TestingUtils is BaseCLTestingUtils {
+contract UniswapV3TestingUtils is BaseCLTestingUtils {
     using SafeERC20 for IERC20;
 
-    constructor(AlgebraV1Adapter _adapter) BaseCLTestingUtils(_adapter) {}
+    constructor(UniswapV3Adapter _adapter) BaseCLTestingUtils(_adapter) {}
 
     function _movePoolPrice(address pool, uint160 targetSqrtPriceX96) internal virtual override {
         (uint160 sqrtPriceX96,) = adapter.getPoolState(pool);
@@ -19,15 +19,15 @@ contract AlgebraV1TestingUtils is BaseCLTestingUtils {
         }
 
         if (sqrtPriceX96 > targetSqrtPriceX96) {
-            IAlgebraPool(pool).swap(address(this), true, type(int256).max, targetSqrtPriceX96, "");
+            IUniswapV3Pool(pool).swap(address(this), true, type(int256).max, targetSqrtPriceX96, "");
         } else {
-            IAlgebraPool(pool).swap(address(this), false, type(int256).max, targetSqrtPriceX96, "");
+            IUniswapV3Pool(pool).swap(address(this), false, type(int256).max, targetSqrtPriceX96, "");
         }
     }
 
-    function algebraSwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata) external {
-        address token0 = IAlgebraPool(msg.sender).token0();
-        address token1 = IAlgebraPool(msg.sender).token1();
+    function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata) external {
+        address token0 = IUniswapV3Pool(msg.sender).token0();
+        address token1 = IUniswapV3Pool(msg.sender).token1();
 
         if (amount0Delta > 0) {
             deal(token0, address(this), uint256(amount0Delta));

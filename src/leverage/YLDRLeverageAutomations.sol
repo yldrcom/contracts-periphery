@@ -9,6 +9,8 @@ import {IAssetConverter} from "../AssetConverter.sol";
 import {
     CLLeveragedPosition, BaseCLAdapter, IERC3156FlashBorrower, IERC3156FlashLender
 } from "./CLLeveragedPosition.sol";
+import {LiquidityAmounts} from "@uniswap/v3-periphery/contracts/libraries/LiquidityAmounts.sol";
+import {TickMath} from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
 
 contract YLDRLeverageAutomations is Ownable {
     uint256 public rebalanceFee;
@@ -37,7 +39,7 @@ contract YLDRLeverageAutomations is Ownable {
         RANGE
     }
 
-    struct RangeConfigParams {
+    struct RangeConfig {
         RangeConfigType rangeConfigType;
         // For TICKS, ticksDown and ticksUp to count from new position opening tick.
         int24 ticksDown;
@@ -49,28 +51,28 @@ contract YLDRLeverageAutomations is Ownable {
         TIMESTAMP
     }
 
-    struct EndParams {
+    struct EndConfig {
         EndTriggerType triggerType;
         uint256 count;
         uint256 timestamp;
     }
 
-    struct RecurringRebalanceParams {
-        RangeConfigParams rangeConfig;
-        EndParams end;
+    struct RecurringRebalanceConfig {
+        RangeConfig rangeConfig;
+        EndConfig endConfig;
         bool active;
     }
 
     struct ScheduledRebalance {
+        bool initialized;
         // Trigger ticks for the next rebalance
         int24 triggerLower;
         int24 triggerUpper;
         // Ticks to count down and up when opening new position
         int24 newTicksDown;
         int24 newTicksUp;
-        RecurringRebalanceParams recurring;
-        bool initialized;
-        uint256 maxGasFeeUsd;
+        RecurringRebalanceConfig recurring;
+        GasFeeConfig gasFeeConfig;
     }
 
     struct ScheduledCompound {
@@ -80,29 +82,21 @@ contract YLDRLeverageAutomations is Ownable {
     }
 
     struct ScheduledDeleverage {
+        bool initialized;
         int24 triggerLower;
         int24 triggerUpper;
         bool withdrawLiquidity;
-        bool initialized;
-        uint256 maxGasFeeUsd;
+        GasFeeConfig gasFeeConfig;
+    }
+
+    struct GasFeeConfig {
+        uint256 maxUsd;
+        uint256 maxPositionPercent;
     }
 
     mapping(address => ScheduledRebalance) public scheduledRebalances;
     mapping(address => ScheduledDeleverage) public scheduledDeleverages;
     mapping(address => ScheduledCompound) public scheduledCompounds;
-
-    function _calculateFeeInPositionDebtToken(address position, uint256 usdGasFee, uint256 percentFee)
-        internal
-        view
-        returns (uint256)
-    {
-        address debtToken = CLLeveragedPosition(position).borrowedToken();
-        uint256 debt = CLLeveragedPosition(position).getDebt();
-        IYLDROracle oracle = IYLDROracle(addressesProvider.getPriceOracle());
-        uint256 debtTokenPrice = oracle.getAssetPrice(debtToken);
-
-        return (10 ** IERC20Metadata(debtToken).decimals()) * usdGasFee / debtTokenPrice + debt * percentFee / 1e4;
-    }
 
     function _checkPositionOwner(address position) internal view {
         require(CLLeveragedPosition(position).owner() == msg.sender, "Only owner can setup rebalance");
@@ -114,8 +108,8 @@ contract YLDRLeverageAutomations is Ownable {
         int24 triggerUpper,
         int24 newTicksDown,
         int24 newTicksUp,
-        RecurringRebalanceParams memory recurring,
-        uint256 maxGasFeeUsd
+        RecurringRebalanceConfig memory recurring,
+        GasFeeConfig memory gasFeeConfig
     ) public {
         _checkPositionOwner(position);
 
@@ -132,7 +126,7 @@ contract YLDRLeverageAutomations is Ownable {
             newTicksUp: newTicksUp,
             initialized: true,
             recurring: recurring,
-            maxGasFeeUsd: maxGasFeeUsd
+            gasFeeConfig: gasFeeConfig
         });
     }
 
@@ -141,8 +135,11 @@ contract YLDRLeverageAutomations is Ownable {
         delete scheduledRebalances[position];
     }
 
-    function _canRebalance(address position, int24 currentTick) internal view returns (bool) {
-        ScheduledRebalance memory scheduledRebalance = scheduledRebalances[position];
+    function _canRebalance(ScheduledRebalance memory scheduledRebalance, int24 currentTick)
+        internal
+        pure
+        returns (bool)
+    {
         if (!scheduledRebalance.initialized) {
             return false;
         }
@@ -154,11 +151,11 @@ contract YLDRLeverageAutomations is Ownable {
         address pool = adapter.getPool(data);
         (, int24 currentTick) = adapter.getPoolState(pool);
 
-        return _canRebalance(position, currentTick);
+        return _canRebalance(scheduledRebalances[position], currentTick);
     }
 
     function _getNextRebalanceTriggers(
-        RecurringRebalanceParams memory recurring,
+        RecurringRebalanceConfig memory recurring,
         int24 currentTick,
         int24 newTickLower,
         int24 newTickUpper
@@ -167,13 +164,13 @@ contract YLDRLeverageAutomations is Ownable {
             return (true, 0, 0);
         }
 
-        if (recurring.end.triggerType == EndTriggerType.COUNT) {
-            recurring.end.count -= 1;
-            if (recurring.end.count == 0) {
+        if (recurring.endConfig.triggerType == EndTriggerType.COUNT) {
+            recurring.endConfig.count -= 1;
+            if (recurring.endConfig.count == 0) {
                 return (true, 0, 0);
             }
-        } else if (recurring.end.triggerType == EndTriggerType.TIMESTAMP) {
-            if (block.timestamp >= recurring.end.timestamp) {
+        } else if (recurring.endConfig.triggerType == EndTriggerType.TIMESTAMP) {
+            if (block.timestamp >= recurring.endConfig.timestamp) {
                 return (true, 0, 0);
             }
         }
@@ -189,29 +186,34 @@ contract YLDRLeverageAutomations is Ownable {
 
     function executeRebalance(address position, IERC3156FlashLender flashloanProvider, uint256 usdGasFee) public {
         _checkOwner();
+        (BaseCLAdapter adapter, BaseCLAdapter.PositionData memory data) = _getPositionCLAdapterAndData(position);
+        ScheduledRebalance memory scheduledRebalance = scheduledRebalances[position];
 
+        int24 newTickLower;
+        int24 newTickUpper;
         int24 currentTick;
-        int24 tickSpacing;
         {
-            (BaseCLAdapter adapter, BaseCLAdapter.PositionData memory data) = _getPositionCLAdapterAndData(position);
             address pool = adapter.getPool(data);
             (, currentTick) = adapter.getPoolState(pool);
-            tickSpacing = adapter.getTickSpacing(pool);
+
+            int24 tickSpacing = adapter.getTickSpacing(pool);
+
+            newTickLower = currentTick - scheduledRebalance.newTicksDown;
+            newTickUpper = currentTick + scheduledRebalance.newTicksUp;
+
+            newTickLower -= (tickSpacing + newTickLower % tickSpacing) % tickSpacing;
+            newTickUpper += (tickSpacing - newTickUpper % tickSpacing) % tickSpacing;
         }
 
-        require(_canRebalance(position, currentTick), "Rebalance not allowed");
-
-        ScheduledRebalance memory scheduledRebalance = scheduledRebalances[position];
-        require(usdGasFee <= scheduledRebalance.maxGasFeeUsd, "Gas fee too high");
-
-        int24 newTickLower = currentTick - scheduledRebalance.newTicksDown;
-        int24 newTickUpper = currentTick + scheduledRebalance.newTicksUp;
-
-        newTickLower -= (tickSpacing + newTickLower % tickSpacing) % tickSpacing;
-        newTickUpper += (tickSpacing - newTickUpper % tickSpacing) % tickSpacing;
-
-        uint256 fee =
-            _calculateFeeInPositionDebtToken({position: position, usdGasFee: usdGasFee, percentFee: rebalanceFee});
+        require(_canRebalance(scheduledRebalance, currentTick), "Rebalance not allowed");
+        uint256 fee = _calculateAndValidateFee({
+            position: position,
+            adapter: adapter,
+            positionData: data,
+            config: scheduledRebalance.gasFeeConfig,
+            usdGasFee: usdGasFee,
+            percentFee: rebalanceFee
+        });
 
         CLLeveragedPosition(position).rebalanceAutomation(
             flashloanProvider,
@@ -242,14 +244,13 @@ contract YLDRLeverageAutomations is Ownable {
         int24 triggerLower,
         int24 triggerUpper,
         bool withdrawLiquidity,
-        uint256 maxGasFeeUsd
+        GasFeeConfig memory gasFeeConfig
     ) public {
         _checkPositionOwner(position);
 
         (BaseCLAdapter adapter, BaseCLAdapter.PositionData memory data) = _getPositionCLAdapterAndData(position);
         address pool = adapter.getPool(data);
         (, int24 currentTick) = adapter.getPoolState(pool);
-
         require((triggerLower < currentTick) && (triggerUpper > currentTick), "Invalid tick range");
 
         scheduledDeleverages[position] = ScheduledDeleverage({
@@ -257,7 +258,7 @@ contract YLDRLeverageAutomations is Ownable {
             triggerUpper: triggerUpper,
             withdrawLiquidity: withdrawLiquidity,
             initialized: true,
-            maxGasFeeUsd: maxGasFeeUsd
+            gasFeeConfig: gasFeeConfig
         });
     }
 
@@ -266,26 +267,42 @@ contract YLDRLeverageAutomations is Ownable {
         delete scheduledDeleverages[position];
     }
 
-    function canDeleverage(address position) public view returns (bool) {
-        ScheduledDeleverage memory scheduledDeleverage = scheduledDeleverages[position];
+    function _canDeleverage(ScheduledDeleverage memory scheduledDeleverage, int24 currentTick)
+        internal
+        pure
+        returns (bool)
+    {
         if (!scheduledDeleverage.initialized) {
             return false;
         }
+        return (scheduledDeleverage.triggerLower >= currentTick) || (scheduledDeleverage.triggerUpper <= currentTick);
+    }
+
+    function canDeleverage(address position) external view returns (bool) {
         (BaseCLAdapter adapter, BaseCLAdapter.PositionData memory data) = _getPositionCLAdapterAndData(position);
         address pool = adapter.getPool(data);
         (, int24 currentTick) = adapter.getPoolState(pool);
-        return (scheduledDeleverage.triggerLower >= currentTick) || (scheduledDeleverage.triggerUpper <= currentTick);
+
+        return _canDeleverage(scheduledDeleverages[position], currentTick);
     }
 
     function executeDeleverage(address position, IERC3156FlashLender flashloanProvider, uint256 usdGasFee) public {
         _checkOwner();
-        require(canDeleverage(position), "Deleverage not allowed");
-
         ScheduledDeleverage memory scheduledDeleverage = scheduledDeleverages[position];
-        require(usdGasFee <= scheduledDeleverage.maxGasFeeUsd, "Gas fee too high");
 
-        uint256 fee =
-            _calculateFeeInPositionDebtToken({position: position, usdGasFee: usdGasFee, percentFee: deleverageFee});
+        (BaseCLAdapter adapter, BaseCLAdapter.PositionData memory data) = _getPositionCLAdapterAndData(position);
+        address pool = adapter.getPool(data);
+        (, int24 currentTick) = adapter.getPoolState(pool);
+        require(_canDeleverage(scheduledDeleverage, currentTick), "Deleverage not allowed");
+
+        uint256 fee = _calculateAndValidateFee({
+            position: position,
+            adapter: adapter,
+            positionData: data,
+            config: scheduledDeleverage.gasFeeConfig,
+            usdGasFee: usdGasFee,
+            percentFee: deleverageFee
+        });
 
         CLLeveragedPosition(position).deleverageAutomation(
             flashloanProvider,
@@ -371,5 +388,64 @@ contract YLDRLeverageAutomations is Ownable {
         adapter = CLLeveragedPosition(position).positionWrapper().adapter();
         uint256 tokenId = CLLeveragedPosition(position).positionTokenId();
         positionData = adapter.getPositionData(tokenId);
+    }
+
+    struct CalcFeeVars {
+        IYLDROracle oracle;
+        address debtToken;
+        uint256 debtTokenPrice;
+        uint8 debtTokenDecimals;
+        uint256 debt;
+        uint256 maxGasFeeUsd;
+        address pool;
+        uint160 sqrtPriceX96;
+        uint256 amount0;
+        uint256 amount1;
+    }
+
+    function _calculateAndValidateFee(
+        address position,
+        BaseCLAdapter adapter,
+        BaseCLAdapter.PositionData memory positionData,
+        GasFeeConfig memory config,
+        uint256 usdGasFee,
+        uint256 percentFee
+    ) internal view returns (uint256) {
+        CalcFeeVars memory vars;
+        vars.oracle = IYLDROracle(addressesProvider.getPriceOracle());
+        vars.debtToken = CLLeveragedPosition(position).borrowedToken();
+        vars.debtTokenPrice = vars.oracle.getAssetPrice(vars.debtToken);
+        vars.debtTokenDecimals = IERC20Metadata(vars.debtToken).decimals();
+        vars.debt = CLLeveragedPosition(position).getDebt();
+
+        uint256 maxGasFeeUsd;
+        if (config.maxUsd > 0) {
+            maxGasFeeUsd = config.maxUsd;
+        } else {
+            vars.pool = adapter.getPool(positionData);
+            (vars.sqrtPriceX96,) = adapter.getPoolState(vars.pool);
+            (vars.amount0, vars.amount1) = LiquidityAmounts.getAmountsForLiquidity(
+                vars.sqrtPriceX96,
+                TickMath.getSqrtRatioAtTick(positionData.tickLower),
+                TickMath.getSqrtRatioAtTick(positionData.tickUpper),
+                positionData.liquidity
+            );
+            (uint256 fee0, uint256 fee1) = adapter.getPendingFees(positionData);
+            vars.amount0 += fee0;
+            vars.amount1 += fee1;
+
+            uint256 token0Price = vars.oracle.getAssetPrice(positionData.token0);
+            uint256 token1Price = vars.oracle.getAssetPrice(positionData.token1);
+
+            uint256 usdValue = vars.amount0 * token0Price / (10 ** IERC20Metadata(positionData.token0).decimals())
+                + vars.amount1 * token1Price / (10 ** IERC20Metadata(positionData.token1).decimals())
+                - vars.debt * vars.debtTokenPrice / (10 ** vars.debtTokenDecimals);
+
+            maxGasFeeUsd = usdValue * config.maxPositionPercent / 1e4;
+        }
+
+        require(usdGasFee <= maxGasFeeUsd, "Gas fee too high");
+
+        return (10 ** vars.debtTokenDecimals) * usdGasFee / vars.debtTokenPrice + percentFee * vars.debt / 1e4;
     }
 }
