@@ -18,6 +18,7 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {CLLeveragedPosition} from "../src/leverage/CLLeveragedPosition.sol";
 import {YLDRLeverageAutomations} from "../src/leverage/YLDRLeverageAutomations.sol";
 import {IAssetConverter} from "../src/AssetConverter.sol";
+import {IERC3156FlashLender} from "@openzeppelin/contracts/interfaces/IERC3156FlashLender.sol";
 
 library CLTesting {
     using PoolTesting for PoolTesting.Data;
@@ -39,7 +40,8 @@ library CLTesting {
         Data storage self,
         PoolTesting.Data storage poolTesting,
         BaseCLAdapter adapter,
-        IAssetConverter assetConverter
+        IAssetConverter assetConverter,
+        IERC3156FlashLender flashloanProvider
     ) internal {
         self.admin = poolTesting.admin;
         self.addressesProvider = poolTesting.addressesProvider;
@@ -54,8 +56,18 @@ library CLTesting {
             )
         );
         self.dataProvider = new CLDataProvider(adapter);
-        self.leverageAutomations =
-            new YLDRLeverageAutomations(15, 150, 50, assetConverter, poolTesting.addressesProvider);
+        self.leverageAutomations = YLDRLeverageAutomations(
+            address(
+                new TransparentUpgradeableProxy(
+                    address(new YLDRLeverageAutomations(15, 150, 50, assetConverter, poolTesting.addressesProvider)),
+                    poolTesting.admin,
+                    abi.encodeCall(YLDRLeverageAutomations.initialize, ())
+                )
+            )
+        );
+        IERC3156FlashLender[] memory providers = new IERC3156FlashLender[](1);
+        providers[0] = flashloanProvider;
+        self.leverageAutomations.whitelistFlashloanProviders(providers);
         self.leverage = new YLDRCLLeverage(
             new CLLeveragedPosition(
                 poolTesting.addressesProvider, self.wrapper, 1000, poolTesting.admin, address(self.leverageAutomations)

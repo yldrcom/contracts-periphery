@@ -6,6 +6,7 @@ mumbai = "${MUMBAI_RPC}"
 moonbeam = "${MOONBEAM_MAINNET_RPC}"
 moonbase = "${MOONBASE_RPC}"
 arbitrum_one = "${ARBITRUM_RPC}"
+base = "${BASE_RPC}"
 
 [profile.default]
 src = "src"
@@ -26,3 +27,4 @@ mumbai = { key = "${POLYGONSCAN_TOKEN}" }
 moonbeam = { key = "${MOONSCAN_TOKEN}" }
 moonbase = { key = "${MOONSCAN_TOKEN}" }
 arbitrum_one = { key = "${ARBISCAN_TOKEN}", chain = "arbitrum" }
+base = { key = "${BASESCAN_TOKEN}"}

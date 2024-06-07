@@ -1,6 +1,6 @@
 pragma solidity 0.8.23;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {IYLDROracle} from "@yldr-lending/core/src/interfaces/IYLDROracle.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IPoolAddressesProvider} from "@yldr-lending/core/src/interfaces/IPoolAddressesProvider.sol";
@@ -11,13 +11,23 @@ import {
 } from "./CLLeveragedPosition.sol";
 import {LiquidityAmounts} from "@uniswap/v3-periphery/contracts/libraries/LiquidityAmounts.sol";
 import {TickMath} from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-contract YLDRLeverageAutomations is Ownable {
-    uint256 public rebalanceFee;
-    uint256 public deleverageFee;
-    uint256 public maxSwapSlippage;
-    IAssetConverter public assetConverter;
+contract YLDRLeverageAutomations is OwnableUpgradeable {
+    address public immutable operator;
+    uint256 public immutable rebalanceFee;
+    uint256 public immutable deleverageFee;
+    uint256 public immutable maxSwapSlippage;
+    IAssetConverter public immutable assetConverter;
     IPoolAddressesProvider public immutable addressesProvider;
+    mapping(IERC3156FlashLender => bool whitelisted) whitelistedFlashloanProviders;
+
+    event NewCompound(address position);
+    event CanceledCompound(address position);
+    event NewRebalance(address position);
+    event CanceledRebalance(address position);
+    event NewDeleverage(address position);
+    event CanceledDeleverage(address position);
 
     constructor(
         uint256 _rebalanceFee,
@@ -25,12 +35,17 @@ contract YLDRLeverageAutomations is Ownable {
         uint256 _maxSwapSlippage,
         IAssetConverter _assetConverter,
         IPoolAddressesProvider _addressesProvider
-    ) Ownable(msg.sender) {
+    ) {
         rebalanceFee = _rebalanceFee;
         maxSwapSlippage = _maxSwapSlippage;
         deleverageFee = _deleverageFee;
         addressesProvider = _addressesProvider;
         assetConverter = _assetConverter;
+        operator = msg.sender;
+    }
+
+    function initialize() public initializer {
+        __Ownable_init(msg.sender);
     }
 
     enum RangeConfigType {
@@ -44,6 +59,9 @@ contract YLDRLeverageAutomations is Ownable {
         // For TICKS, ticksDown and ticksUp to count from new position opening tick.
         int24 ticksDown;
         int24 ticksUp;
+        // For PRICE sqrtPriceX96Down and sqrtPriceX96Up to count from new position opening price.
+        uint160 sqrtPriceX96Down;
+        uint160 sqrtPriceX96Up;
     }
 
     enum EndTriggerType {
@@ -98,8 +116,24 @@ contract YLDRLeverageAutomations is Ownable {
     mapping(address => ScheduledDeleverage) public scheduledDeleverages;
     mapping(address => ScheduledCompound) public scheduledCompounds;
 
+    function whitelistFlashloanProviders(IERC3156FlashLender[] memory providers) public {
+        _checkOwner();
+
+        for (uint256 i = 0; i < providers.length; i++) {
+            whitelistedFlashloanProviders[providers[i]] = true;
+        }
+    }
+
+    function _checkOperator() internal view {
+        require(msg.sender == operator, "Only operator can call this function");
+    }
+
     function _checkPositionOwner(address position) internal view {
         require(CLLeveragedPosition(position).owner() == msg.sender, "Only owner can setup rebalance");
+    }
+
+    function _checkWhitelistedFlashloanProvider(IERC3156FlashLender provider) internal view {
+        require(whitelistedFlashloanProviders[provider], "Flashloan provider not whitelisted");
     }
 
     function setupRebalance(
@@ -128,11 +162,15 @@ contract YLDRLeverageAutomations is Ownable {
             recurring: recurring,
             gasFeeConfig: gasFeeConfig
         });
+
+        emit NewRebalance(position);
     }
 
     function cancelRebalance(address position) public {
         _checkPositionOwner(position);
         delete scheduledRebalances[position];
+
+        emit CanceledRebalance(position);
     }
 
     function _canRebalance(ScheduledRebalance memory scheduledRebalance, int24 currentTick)
@@ -177,6 +215,16 @@ contract YLDRLeverageAutomations is Ownable {
 
         if (recurring.rangeConfig.rangeConfigType == RangeConfigType.TICKS) {
             return (false, currentTick - recurring.rangeConfig.ticksDown, currentTick + recurring.rangeConfig.ticksUp);
+        } else if (recurring.rangeConfig.rangeConfigType == RangeConfigType.PRICE) {
+            uint160 sqrtPriceX96 = TickMath.getSqrtRatioAtTick(currentTick);
+            uint160 sqrtPriceX96Down = (
+                recurring.rangeConfig.sqrtPriceX96Down <= (sqrtPriceX96 - TickMath.MIN_SQRT_RATIO)
+            ) ? sqrtPriceX96 - recurring.rangeConfig.sqrtPriceX96Down : TickMath.MIN_SQRT_RATIO;
+            uint160 sqrtPriceX96Up = (recurring.rangeConfig.sqrtPriceX96Up <= (TickMath.MAX_SQRT_RATIO - sqrtPriceX96))
+                ? sqrtPriceX96 + recurring.rangeConfig.sqrtPriceX96Up
+                : TickMath.MAX_SQRT_RATIO;
+
+            return (false, TickMath.getTickAtSqrtRatio(sqrtPriceX96Down), TickMath.getTickAtSqrtRatio(sqrtPriceX96Up));
         } else if (recurring.rangeConfig.rangeConfigType == RangeConfigType.RANGE) {
             return (false, newTickLower, newTickUpper);
         }
@@ -185,7 +233,8 @@ contract YLDRLeverageAutomations is Ownable {
     }
 
     function executeRebalance(address position, IERC3156FlashLender flashloanProvider, uint256 usdGasFee) public {
-        _checkOwner();
+        _checkOperator();
+        _checkWhitelistedFlashloanProvider(flashloanProvider);
         (BaseCLAdapter adapter, BaseCLAdapter.PositionData memory data) = _getPositionCLAdapterAndData(position);
         ScheduledRebalance memory scheduledRebalance = scheduledRebalances[position];
 
@@ -260,11 +309,15 @@ contract YLDRLeverageAutomations is Ownable {
             initialized: true,
             gasFeeConfig: gasFeeConfig
         });
+
+        emit NewDeleverage(position);
     }
 
     function cancelDeleverage(address position) public {
         _checkPositionOwner(position);
         delete scheduledDeleverages[position];
+
+        emit CanceledDeleverage(position);
     }
 
     function _canDeleverage(ScheduledDeleverage memory scheduledDeleverage, int24 currentTick)
@@ -287,7 +340,8 @@ contract YLDRLeverageAutomations is Ownable {
     }
 
     function executeDeleverage(address position, IERC3156FlashLender flashloanProvider, uint256 usdGasFee) public {
-        _checkOwner();
+        _checkOperator();
+        _checkWhitelistedFlashloanProvider(flashloanProvider);
         ScheduledDeleverage memory scheduledDeleverage = scheduledDeleverages[position];
 
         (BaseCLAdapter adapter, BaseCLAdapter.PositionData memory data) = _getPositionCLAdapterAndData(position);
@@ -320,27 +374,41 @@ contract YLDRLeverageAutomations is Ownable {
 
     function setupCompound(address position, uint256 maxTotalFeePercent) public {
         _checkPositionOwner(position);
-
         scheduledCompounds[position] = ScheduledCompound({initialized: true, maxTotalFeePercent: maxTotalFeePercent});
+
+        emit NewCompound(position);
     }
 
     function cancelCompound(address position) public {
         _checkPositionOwner(position);
         delete scheduledCompounds[position];
+
+        emit CanceledCompound(position);
     }
 
-    function canCompound(address position) public view returns (bool) {
+    function canCompound(address position, IERC3156FlashLender flashloanProvider, uint256 usdGasFee)
+        public
+        view
+        returns (bool)
+    {
         ScheduledCompound memory scheduledCompound = scheduledCompounds[position];
-        return scheduledCompound.initialized;
+        if (!scheduledCompound.initialized) {
+            return false;
+        }
+        (, uint256 percent) = _calculateCompoundFeeAndPercent(position, flashloanProvider, usdGasFee);
+        return percent <= scheduledCompound.maxTotalFeePercent;
     }
 
     function executeCompound(address position, IERC3156FlashLender flashloanProvider, uint256 usdGasFee) public {
-        _checkOwner();
-        require(canCompound(position), "Compound not allowed");
+        _checkOperator();
+        _checkWhitelistedFlashloanProvider(flashloanProvider);
+        ScheduledCompound memory scheduledCompound = scheduledCompounds[position];
 
-        uint256 fee = _calculateAndValidateCompoundFee(
-            position, flashloanProvider, usdGasFee, scheduledCompounds[position].maxTotalFeePercent
-        );
+        require(scheduledCompound.initialized, "Compound not allowed");
+
+        (uint256 fee, uint256 percent) = _calculateCompoundFeeAndPercent(position, flashloanProvider, usdGasFee);
+
+        require(percent <= scheduledCompounds[position].maxTotalFeePercent, "Fee too high");
 
         CLLeveragedPosition(position).compoundAutomation(
             flashloanProvider,
@@ -349,12 +417,11 @@ contract YLDRLeverageAutomations is Ownable {
         );
     }
 
-    function _calculateAndValidateCompoundFee(
-        address position,
-        IERC3156FlashLender flashLoanProvider,
-        uint256 usdGasFee,
-        uint256 maxFeePercent
-    ) internal view returns (uint256) {
+    function _calculateCompoundFeeAndPercent(address position, IERC3156FlashLender flashLoanProvider, uint256 usdGasFee)
+        internal
+        view
+        returns (uint256 gasFee, uint256 percent)
+    {
         IYLDROracle oracle = IYLDROracle(addressesProvider.getPriceOracle());
 
         address debtToken = CLLeveragedPosition(position).borrowedToken();
@@ -370,14 +437,12 @@ contract YLDRLeverageAutomations is Ownable {
             pendingFeesUsd = fee0Usd + fee1Usd;
         }
 
-        uint256 gasFee = usdGasFee * 10 ** IERC20Metadata(debtToken).decimals() / oracle.getAssetPrice(debtToken);
+        gasFee = usdGasFee * 10 ** IERC20Metadata(debtToken).decimals() / oracle.getAssetPrice(debtToken);
         uint256 flashFee = flashLoanProvider.flashFee(debtToken, CLLeveragedPosition(position).getDebt() + gasFee);
         uint256 flashFeeUsd = flashFee * oracle.getAssetPrice(debtToken) / 10 ** IERC20Metadata(debtToken).decimals();
-        uint256 percent = (flashFeeUsd + usdGasFee) * 1e4 / pendingFeesUsd;
+        percent = (pendingFeesUsd == 0) ? 1e4 : (flashFeeUsd + usdGasFee) * 1e4 / pendingFeesUsd;
 
-        require(percent <= maxFeePercent, "Fee too high");
-
-        return gasFee;
+        return (gasFee, percent);
     }
 
     function _getPositionCLAdapterAndData(address position)
@@ -447,5 +512,25 @@ contract YLDRLeverageAutomations is Ownable {
         require(usdGasFee <= maxGasFeeUsd, "Gas fee too high");
 
         return (10 ** vars.debtTokenDecimals) * usdGasFee / vars.debtTokenPrice + percentFee * vars.debt / 1e4;
+    }
+
+    function getConfiguredAutomations(address[] memory positions)
+        public
+        view
+        returns (
+            ScheduledRebalance[] memory rebalances,
+            ScheduledDeleverage[] memory deleverages,
+            ScheduledCompound[] memory compounds
+        )
+    {
+        rebalances = new ScheduledRebalance[](positions.length);
+        deleverages = new ScheduledDeleverage[](positions.length);
+        compounds = new ScheduledCompound[](positions.length);
+
+        for (uint256 i = 0; i < positions.length; i++) {
+            rebalances[i] = scheduledRebalances[positions[i]];
+            deleverages[i] = scheduledDeleverages[positions[i]];
+            compounds[i] = scheduledCompounds[positions[i]];
+        }
     }
 }

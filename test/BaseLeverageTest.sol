@@ -69,7 +69,7 @@ abstract contract BaseLeverageTest is BaseTest {
         poolTesting.init(ADMIN, 2);
         assetConverter = new AssetConverter(poolTesting.addressesProvider);
 
-        clTesting.init(poolTesting, setup.adapter, assetConverter);
+        clTesting.init(poolTesting, setup.adapter, assetConverter, flashloanProvider);
 
         poolTesting.addReserve(
             address(token0), 0.8e27, 0, 0.02e27, 0.8e27, 0.7e4, 0.75e4, 1.05e4, setup.token0Oracle, 0.15e4
@@ -708,7 +708,9 @@ abstract contract BaseLeverageTest is BaseTest {
                 rangeConfig: YLDRLeverageAutomations.RangeConfig({
                     rangeConfigType: YLDRLeverageAutomations.RangeConfigType.TICKS,
                     ticksDown: 100,
-                    ticksUp: 500
+                    ticksUp: 500,
+                    sqrtPriceX96Down: 0,
+                    sqrtPriceX96Up: 0
                 }),
                 endConfig: YLDRLeverageAutomations.EndConfig({
                     triggerType: YLDRLeverageAutomations.EndTriggerType.COUNT,

@@ -50,8 +50,10 @@ contract CLLeverageDataProvider {
 
         (uint256 lastFees0, uint256 lastFees1) = (position.lastFees0(), position.lastFees1());
         uint256 revenueFeePercent = position.revenueFee();
-        uint256 revenueFee0 = Math.mulDiv(positionData.fee0 - lastFees0, revenueFeePercent, 1e4);
-        uint256 revenueFee1 = Math.mulDiv(positionData.fee1 - lastFees1, revenueFeePercent, 1e4);
+        uint256 revenueFee0 =
+            (positionData.fee0 > lastFees0) ? (positionData.fee0 - lastFees0) * revenueFeePercent / 1e4 : 0;
+        uint256 revenueFee1 =
+            (positionData.fee1 > lastFees1) ? (positionData.fee1 - lastFees1) * revenueFeePercent / 1e4 : 0;
 
         return LeveragedCLPositionData({
             uniswapV3Position: positionData,
