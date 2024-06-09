@@ -100,8 +100,8 @@ contract CreateAndLeverageTest is BaseTest {
 
         poolTesting.addERC1155Reserve(
             address(uniswapV3Wrapper),
-            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, uniswapV3Wrapper)),
-            address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
+            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, adapter)),
+            address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, adapter)),
             ADMIN,
             0.2e4
         );

@@ -88,8 +88,8 @@ contract CLDepositZapTest is BaseTest {
 
         poolTesting.addERC1155Reserve(
             address(uniswapV3Wrapper),
-            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, uniswapV3Wrapper)),
-            address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, uniswapV3Wrapper)),
+            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, uniswapV3Adapter)),
+            address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, uniswapV3Adapter)),
             ADMIN,
             0.2e4
         );

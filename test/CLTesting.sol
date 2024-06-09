@@ -80,8 +80,8 @@ library CLTesting {
 
         poolTesting.addERC1155Reserve(
             address(self.wrapper),
-            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, self.wrapper)),
-            address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, self.wrapper)),
+            address(new ERC1155CLWrapperConfigurationProvider(poolTesting.addressesProvider, adapter)),
+            address(new ERC1155CLWrapperOracle(poolTesting.addressesProvider, adapter)),
             address(self.feeCollector),
             0.2e4
         );
