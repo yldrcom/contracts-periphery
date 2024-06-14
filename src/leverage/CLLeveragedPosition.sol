@@ -55,7 +55,7 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
 
     enum FlashloanPurpose {
         Deleverage,
-        Compound,
+        ClaimFees,
         Rebalance
     }
 
@@ -115,6 +115,12 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
         uint256 maxSwapSlippage;
         address receiver;
         bool withdrawLiquidity;
+    }
+
+    struct ClaimFeesParams {
+        IAssetConverter assetConverter;
+        uint256 maxSwapSlippage;
+        bool withdrawFees;
     }
 
     /// @notice Params which are used to compound fees
@@ -641,7 +647,7 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
         pool.borrow(cache.borrowedToken, amount, 0, address(this));
     }
 
-    function _compoundInsideFlashloan(CompoundParams memory params, uint256 flashAmount, uint256 flashFee) internal {
+    function _compoundInsideFlashloan(ClaimFeesParams memory params, uint256 flashAmount, uint256 flashFee) internal {
         Cache memory cache = _getCache();
         _checkPoolPrice(cache, params.maxSwapSlippage);
 
@@ -658,26 +664,30 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
             _transferTokens(cache, feeTreasury, fees0ToTreasury, fees1ToTreasury);
         }
 
-        // Divide and swap rewards
-        (bool zeroForOne, uint256 amount) = _determineNeededSwap(cache, amount0, amount1, tickLower, tickUpper);
-
-        if (zeroForOne) {
-            amount0 -= amount;
-            amount1 += _swap(params.assetConverter, cache.token0, cache.token1, amount, params.maxSwapSlippage);
+        if (params.withdrawFees) {
+            _transferTokens(cache, owner(), amount0, amount1);
         } else {
-            amount1 -= amount;
-            amount0 += _swap(params.assetConverter, cache.token1, cache.token0, amount, params.maxSwapSlippage);
+            // Divide and swap rewards
+            (bool zeroForOne, uint256 amount) = _determineNeededSwap(cache, amount0, amount1, tickLower, tickUpper);
+
+            if (zeroForOne) {
+                amount0 -= amount;
+                amount1 += _swap(params.assetConverter, cache.token0, cache.token1, amount, params.maxSwapSlippage);
+            } else {
+                amount1 -= amount;
+                amount0 += _swap(params.assetConverter, cache.token1, cache.token0, amount, params.maxSwapSlippage);
+            }
+
+            // Add liquidity
+            (uint256 amount0Resulted, uint256 amount1Resulted) = _increaseLiquidity(cache, amount0, amount1);
+
+            _transferTokens(
+                cache,
+                owner(),
+                amount0 > amount0Resulted ? amount0 - amount0Resulted : 0,
+                amount1 > amount1Resulted ? amount1 - amount1Resulted : 0
+            );
         }
-
-        // Add liquidity
-        (uint256 amount0Resulted, uint256 amount1Resulted) = _increaseLiquidity(cache, amount0, amount1);
-
-        _transferTokens(
-            cache,
-            owner(),
-            amount0 > amount0Resulted ? amount0 - amount0Resulted : 0,
-            amount1 > amount1Resulted ? amount1 - amount1Resulted : 0
-        );
 
         _wrapAndBorrow(cache, flashAmount + flashFee);
 
@@ -797,8 +807,8 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
 
         if (purpose == FlashloanPurpose.Deleverage) {
             _deleverageInsideFlashloan(abi.decode(params, (DeleverageParams)), amount, flashFee);
-        } else if (purpose == FlashloanPurpose.Compound) {
-            _compoundInsideFlashloan(abi.decode(params, (CompoundParams)), amount, flashFee);
+        } else if (purpose == FlashloanPurpose.ClaimFees) {
+            _compoundInsideFlashloan(abi.decode(params, (ClaimFeesParams)), amount, flashFee);
         } else if (purpose == FlashloanPurpose.Rebalance) {
             _rebalanceInsideFlashloan(abi.decode(params, (RebalanceParams)), amount, flashFee);
         }
@@ -842,11 +852,25 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
         _deleverage(flashloanProvider, params, automationFee);
     }
 
-    function _compound(IERC3156FlashLender flashloanProvider, CompoundParams memory params, uint256 automationFee)
+    function _claimFees(IERC3156FlashLender flashloanProvider, ClaimFeesParams memory params, uint256 automationFee)
         internal
     {
         _takeFlashloan(
-            flashloanProvider, borrowedToken, getDebt() + automationFee, FlashloanPurpose.Compound, abi.encode(params)
+            flashloanProvider, borrowedToken, getDebt() + automationFee, FlashloanPurpose.ClaimFees, abi.encode(params)
+        );
+    }
+
+    function _compound(IERC3156FlashLender flashloanProvider, CompoundParams memory params, uint256 automationFee)
+        internal
+    {
+        _claimFees(
+            flashloanProvider,
+            ClaimFeesParams({
+                assetConverter: params.assetConverter,
+                maxSwapSlippage: params.maxSwapSlippage,
+                withdrawFees: false
+            }),
+            automationFee
         );
     }
 
@@ -873,6 +897,13 @@ contract CLLeveragedPosition is OwnableUpgradeable, ERC1155Holder, ERC721Holder,
     ) external {
         _checkAutomations();
         _compound(flashloanProvider, params, automationFee);
+    }
+
+    function claimFees(IERC3156FlashLender flashloanProvider, ClaimFeesParams memory params) external {
+        _checkOwner();
+        _claimFees(flashloanProvider, params, 0);
+
+        emit Compound();
     }
 
     function _rebalance(IERC3156FlashLender flashloanProvider, RebalanceParams memory params, uint256 automationFee)

@@ -77,7 +77,7 @@ contract DeployScript is Script {
         _deployDataProviders(leverage);
     }
 
-    function automations(
+    function deployAutomations(
         IPoolAddressesProvider addressesProvider,
         IAssetConverter assetConverter,
         IERC3156FlashLender[] memory providers
@@ -124,5 +124,30 @@ contract DeployScript is Script {
         require(success);
 
         console.log(vm.toString(address(admin)), vm.toString(data));
+    }
+
+    function deployAndUpgradeLeverageImpl(YLDRCLLeverage leverage, address _automations) public {
+        CLLeveragedPosition currentImpl = CLLeveragedPosition(leverage.implementation());
+
+        vm.startBroadcast();
+        address feeTreasury = Ownable(address(currentImpl.addressesProvider())).owner();
+        CLLeveragedPosition newImpl = new CLLeveragedPosition(
+            currentImpl.addressesProvider(),
+            currentImpl.positionWrapper(),
+            currentImpl.revenueFeePercent(),
+            feeTreasury,
+            _automations
+        );
+
+        vm.stopBroadcast();
+        vm.prank(leverage.owner());
+        bytes memory data = abi.encodeCall(
+            YLDRCLLeverage.updateImplementation,
+            (newImpl)
+        );
+        (bool success,) = address(leverage).call(data);
+        require(success);
+
+        console.log(vm.toString(address(leverage)), vm.toString(data));
     }
 }

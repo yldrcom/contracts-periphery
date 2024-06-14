@@ -882,4 +882,36 @@ abstract contract BaseLeverageTest is BaseTest {
         return oracle.getAssetPrice(clPosition.borrowedToken()) * debtAmount
             / (10 ** IERC20Metadata(clPosition.borrowedToken()).decimals());
     }
+
+    function test_claimFees() public {
+        LeveragePositionData memory pos = _aquireLeveragedPosition(
+            _usdToToken(token0, 10_000e8), _usdToToken(token1, 10_000e8), _usdToToken(token1, 10_000e8)
+        );
+
+        BaseCLAdapter.PositionData memory positionData = clTesting.adapter.getPositionData(pos.tokenId);
+        (uint160 currentSqrtPrice,) = clTesting.adapter.getPoolState(clTesting.adapter.getPool(positionData));
+        vm.stopPrank();
+        // Do some movements to increase fees
+        testingUtils.movePoolPrice(pos.tokenId, currentSqrtPrice * 101 / 100);
+        testingUtils.movePoolPrice(pos.tokenId, currentSqrtPrice);
+        vm.startPrank(ALICE);
+
+        uint128 liquidityBefore = clTesting.dataProvider.getPositionData(pos.tokenId).liquidity;
+        uint256 balance0Before = token0.balanceOf(ALICE);
+        uint256 balance1Before = token1.balanceOf(ALICE);
+
+
+        pos.position.claimFees(
+            flashloanProvider, CLLeveragedPosition.ClaimFeesParams({assetConverter: assetConverter, maxSwapSlippage: 50, withdrawFees: true})
+        );
+
+        uint128 liquidityAfter = clTesting.dataProvider.getPositionData(pos.tokenId).liquidity;
+        assertEq(liquidityAfter, liquidityBefore);
+
+        uint256 balance0After = token0.balanceOf(ALICE);
+        uint256 balance1After = token1.balanceOf(ALICE);
+
+        assertGt(balance0After, balance0Before);
+        assertGt(balance1After, balance1Before);
+    }
 }
