@@ -141,10 +141,7 @@ contract DeployScript is Script {
 
         vm.stopBroadcast();
         vm.prank(leverage.owner());
-        bytes memory data = abi.encodeCall(
-            YLDRCLLeverage.updateImplementation,
-            (newImpl)
-        );
+        bytes memory data = abi.encodeCall(YLDRCLLeverage.updateImplementation, (newImpl));
         (bool success,) = address(leverage).call(data);
         require(success);
 

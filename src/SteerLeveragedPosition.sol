@@ -37,10 +37,12 @@ contract SteerLeveragedPosition is BaseERC20LeveragedPosition {
         tokens[1] = token1;
     }
 
-    function initialize(PositionInitParams memory params) public initializer {
+    function initialize(PositionInitParams memory params) public virtual override initializer {
         ISteerVault vault = ISteerVault(params.lpToken);
         token0 = vault.token0();
         token1 = vault.token1();
+
+        __BaseERC20Leverage__init(params);
     }
 
     function _divideForMint(uint256 borrowedAmount) internal virtual override returns (uint256[] memory amounts) {

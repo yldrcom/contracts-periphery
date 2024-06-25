@@ -900,9 +900,13 @@ abstract contract BaseLeverageTest is BaseTest {
         uint256 balance0Before = token0.balanceOf(ALICE);
         uint256 balance1Before = token1.balanceOf(ALICE);
 
-
         pos.position.claimFees(
-            flashloanProvider, CLLeveragedPosition.ClaimFeesParams({assetConverter: assetConverter, maxSwapSlippage: 50, withdrawFees: true})
+            flashloanProvider,
+            CLLeveragedPosition.ClaimFeesParams({
+                assetConverter: assetConverter,
+                maxSwapSlippage: 50,
+                withdrawFees: true
+            })
         );
 
         uint128 liquidityAfter = clTesting.dataProvider.getPositionData(pos.tokenId).liquidity;

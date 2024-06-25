@@ -20,6 +20,7 @@ import {BaseCLAdapter} from "@yldr-lending/core/src/protocol/concentrated-liquid
 import {ERC1155CLWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/ERC1155CLWrapper.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {CLAdapterWrapper} from "@yldr-lending/core/src/protocol/concentrated-liquidity/CLAdapterWrapper.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 abstract contract BaseERC20LeveragedPosition is OwnableUpgradeable, IERC3156FlashBorrower {
     using SafeERC20 for IERC20;
@@ -34,6 +35,7 @@ abstract contract BaseERC20LeveragedPosition is OwnableUpgradeable, IERC3156Flas
         uint256 amountToBorrow;
         IAssetConverter assetConverter;
         uint256 maxSwapSlippage;
+        address owner;
     }
 
     /// @notice Params which are used to deleverage position
@@ -63,7 +65,7 @@ abstract contract BaseERC20LeveragedPosition is OwnableUpgradeable, IERC3156Flas
     }
 
     function __BaseERC20Leverage__init(PositionInitParams memory params) internal onlyInitializing {
-        __Ownable_init(msg.sender);
+        __Ownable_init(params.owner);
         lpToken = params.lpToken;
         tokenToBorrow = params.tokenToBorrow;
 
@@ -107,11 +109,14 @@ abstract contract BaseERC20LeveragedPosition is OwnableUpgradeable, IERC3156Flas
         uint256 usdToBurn;
         {
             IYLDROracle oracle = IYLDROracle(addressesProvider.getPriceOracle());
-            usdDebt = (flashAmount + flashFee) * oracle.getAssetPrice(tokenToBorrow)
-                / (10 ** IERC20Metadata(tokenToBorrow).decimals());
+
             lpTokenPrice = oracle.getAssetPrice(lpToken);
             uint256 lpBalance = pool.withdraw(lpToken, type(uint256).max, address(this));
             uint256 usdLpValue = lpBalance * lpTokenPrice / (10 ** IERC20Metadata(lpToken).decimals());
+
+            usdDebt = (flashAmount + flashFee) * oracle.getAssetPrice(tokenToBorrow)
+                / (10 ** IERC20Metadata(tokenToBorrow).decimals());
+            usdDebt = Math.min(usdDebt * (1e4 + params.maxSwapSlippage) / 1e4, usdLpValue);
 
             if (params.withdrawLiquidity) {
                 usdToBurn = usdLpValue;
@@ -141,6 +146,7 @@ abstract contract BaseERC20LeveragedPosition is OwnableUpgradeable, IERC3156Flas
         }
     }
 
+    function initialize(PositionInitParams memory params) public virtual;
     function _divideForMint(uint256 borrowedAmount) internal virtual returns (uint256[] memory amounts);
     function _mint(uint256[] memory amounts) internal virtual returns (uint256 lpAmount);
     function _burn(uint256 lpAmount) internal virtual returns (uint256[] memory amounts);
@@ -188,7 +194,7 @@ abstract contract BaseERC20LeveragedPosition is OwnableUpgradeable, IERC3156Flas
         uint256[] memory amounts = _divideForMint(params.amountToBorrow);
         for (uint256 i = 0; i < amounts.length; i++) {
             amounts[i] =
-                _swap(params.assetConverter, underlyingTokens[i], tokenToBorrow, amounts[i], params.maxSwapSlippage);
+                _swap(params.assetConverter, tokenToBorrow, underlyingTokens[i], amounts[i], params.maxSwapSlippage);
         }
         uint256 lpAmount = _mint(amounts);
         pool.supply(lpToken, lpAmount, address(this), 0);
