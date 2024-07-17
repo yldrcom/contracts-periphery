@@ -1,10 +1,10 @@
 pragma solidity ^0.8.10;
 
 import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
-import {SteerLeveragedPosition, BaseERC20LeveragedPosition} from "../src/SteerLeveragedPosition.sol";
+import {ALMLeveragedPosition, BaseERC20LeveragedPosition} from "../src/alm/ALMLeveragedPosition.sol";
 import {PoolTesting, IPool} from "@yldr-lending/core/test/libraries/PoolTesting.sol";
 import {ISteerVault} from "@yldr-lending/core/src/interfaces/ext/ISteerVault.sol";
-import {ERC20Leverage} from "../src/ERC20Leverage.sol";
+import {ERC20Leverage} from "../src/erc20-leverage/ERC20Leverage.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SteerVaultOracle} from "@yldr-lending/core/src/integrations/steer/SteerVaultOracle.sol";
 import {AlgebraV1Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/AlgebraV1Adapter.sol";
@@ -129,8 +129,6 @@ contract SteerStrategyTest is BaseTest {
         uint256 wethBalanceBefore = weth.balanceOf(ALICE);
 
         uint256 shares = vault.deposit(1000e6);
-
-        uint256 assets = vault.redeem(shares);
 
         uint256 usdcBalanceAfter = usdc.balanceOf(ALICE);
         uint256 wethBalanceAfter = weth.balanceOf(ALICE);

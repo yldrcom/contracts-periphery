@@ -1,10 +1,10 @@
 pragma solidity ^0.8.10;
 
 import {BaseTest} from "@yldr-lending/core/test/base/BaseTest.sol";
-import {SteerLeveragedPosition, BaseERC20LeveragedPosition} from "../src/SteerLeveragedPosition.sol";
+import {ALMLeveragedPosition, BaseERC20LeveragedPosition} from "../src/alm/ALMLeveragedPosition.sol";
 import {PoolTesting, IPool} from "@yldr-lending/core/test/libraries/PoolTesting.sol";
 import {ISteerVault} from "@yldr-lending/core/src/interfaces/ext/ISteerVault.sol";
-import {ERC20Leverage} from "../src/ERC20Leverage.sol";
+import {ERC20Leverage} from "../src/erc20-leverage/ERC20Leverage.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SteerVaultOracle} from "@yldr-lending/core/src/integrations/steer/SteerVaultOracle.sol";
 import {AlgebraV1Adapter} from "@yldr-lending/core/src/protocol/concentrated-liquidity/adapters/AlgebraV1Adapter.sol";
@@ -13,6 +13,8 @@ import {IAssetConverter} from "../src/interfaces/IAssetConverter.sol";
 import {UniswapV3Converter, IQuoterV2, IUniswapV3Factory} from "../src/converters/UniswapV3Converter.sol";
 import {AssetConverter} from "../src/AssetConverter.sol";
 import {YLDRERC3156Wrapper} from "../src/flashloan/YLDRERC3156Wrapper.sol";
+import {SteerAdapter, BaseALMAdapter} from "../src/alm/alm-adapters/SteerAdapter.sol";
+import {ALMCreateAndLeverage} from "../src/alm/ALMCreateAndLeverage.sol";
 
 contract SteerVaultTest is BaseTest {
     using PoolTesting for PoolTesting.Data;
@@ -23,6 +25,7 @@ contract SteerVaultTest is BaseTest {
     ISteerVault steerVault = ISteerVault(0x7b99506C8E89D5ba835e00E2bC48e118264d44ff);
 
     ERC20Leverage leverage;
+    ALMCreateAndLeverage createAndLeverage;
 
     IERC20Metadata usdc = IERC20Metadata(0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359);
     IERC20Metadata weth = IERC20Metadata(0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619);
@@ -38,9 +41,12 @@ contract SteerVaultTest is BaseTest {
         vm.startPrank(ADMIN);
 
         poolTesting.init(ADMIN, 2);
-        SteerLeveragedPosition position = new SteerLeveragedPosition(poolTesting.addressesProvider);
+
+        SteerAdapter steerAdapter = new SteerAdapter();
+        ALMLeveragedPosition position = new ALMLeveragedPosition(poolTesting.addressesProvider, steerAdapter);
 
         leverage = new ERC20Leverage(position, ADMIN);
+        createAndLeverage = new ALMCreateAndLeverage(leverage);
 
         poolTesting.addReserve(
             address(usdc),
@@ -121,6 +127,8 @@ contract SteerVaultTest is BaseTest {
 
         usdc.forceApprove(address(steerVault), 1000e6);
         weth.forceApprove(address(steerVault), 1e18);
+        usdc.forceApprove(address(createAndLeverage), type(uint256).max);
+        weth.forceApprove(address(createAndLeverage), type(uint256).max);
         IERC20Metadata(address(steerVault)).forceApprove(address(leverage), type(uint256).max);
     }
 
@@ -130,7 +138,7 @@ contract SteerVaultTest is BaseTest {
 
         (uint256 shares,,) = steerVault.deposit(1000e6, 1e18, 0, 0, ALICE);
 
-        SteerLeveragedPosition position = SteerLeveragedPosition(
+        ALMLeveragedPosition position = ALMLeveragedPosition(
             leverage.leverage(
                 BaseERC20LeveragedPosition.PositionInitParams({
                     lpToken: address(steerVault),
@@ -140,6 +148,49 @@ contract SteerVaultTest is BaseTest {
                     assetConverter: assetConverter,
                     maxSwapSlippage: 50,
                     owner: ALICE
+                })
+            )
+        );
+
+        position.deleverage(
+            flashloanProvider,
+            BaseERC20LeveragedPosition.DeleverageParams({
+                assetConverter: assetConverter,
+                receiver: ALICE,
+                withdrawLiquidity: true,
+                maxSwapSlippage: 200
+            })
+        );
+
+        uint256 usdcBalanceAfter = usdc.balanceOf(ALICE);
+        uint256 wethBalanceAfter = weth.balanceOf(ALICE);
+
+        assertApproxEqAbs(usdcBalanceAfter, usdcBalanceBefore, 1000e6 / 100);
+        assertApproxEqAbs(wethBalanceAfter, wethBalanceBefore, 1e18 / 100);
+    }
+
+    function test_createAndLeverage() public {
+        uint256 usdcBalanceBefore = usdc.balanceOf(ALICE);
+        uint256 wethBalanceBefore = weth.balanceOf(ALICE);
+
+        ALMLeveragedPosition position = ALMLeveragedPosition(
+            createAndLeverage.mint(
+                BaseALMAdapter.DepositParams({
+                    vault: address(steerVault),
+                    amount0Desired: 1000e6,
+                    amount1Desired: 1e18,
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    receiver: ALICE
+                }),
+                BaseERC20LeveragedPosition.PositionInitParams({
+                    lpToken: address(steerVault),
+                    lpAmount: 0,
+                    tokenToBorrow: address(usdc),
+                    amountToBorrow: 1000e6,
+                    assetConverter: assetConverter,
+                    owner: ALICE,
+                    maxSwapSlippage: 50
                 })
             )
         );
